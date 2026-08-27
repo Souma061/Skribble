@@ -1,0 +1,4 @@
+minimumReleaseAgeExclude:
+  - '@rolldown/binding-freebsd-x64@1.2.6'
+  - '@rolldown/binding-linux-x64-musl@1.2.6'
+  - '@rolldown/binding-openharmony-arm64@1.2.6'
