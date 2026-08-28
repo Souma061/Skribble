@@ -4,9 +4,10 @@
     "description": "",
     "main": "index.js",
     "scripts": {
-        "dev": "nodemon",
+        "dev": "tsx watch src/index.ts",
         "build": "tsc",
-        "start": "node dist/index.js"
+        "start": "node dist/index.js",
+        "test": "tsx src/game/GameEngine.test.ts && tsx src/rooms.test.ts"
     },
     "keywords": [],
     "author": "",
@@ -20,8 +21,8 @@
     },
     "type": "module",
     "dependencies": {
-        "body-parser": "^2.3.0",
         "cors": "^2.8.6",
+        "dotenv": "^17.2.4",
         "express": "^5.2.1",
         "socket.io": "^4.8.3"
     },
@@ -29,9 +30,7 @@
         "@types/cors": "^2.8.19",
         "@types/express": "^5.0.6",
         "@types/node": "^26.3.0",
-        "nodemon": "^3.1.14",
-        "ts-node": "^10.9.2",
-        "ts-node-dev": "^2.0.0",
+        "tsx": "^4.21.0",
         "typescript": "^7.0.2"
     }
 }
