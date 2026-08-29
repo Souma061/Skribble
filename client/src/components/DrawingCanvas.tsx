@@ -8,6 +8,7 @@ import {
   Pencil,
 } from "lucide-react";
 import type { NormalizedPoint, Stroke, StrokeStartPayload, StrokeChunkPayload } from "../types";
+import { encodeBinaryChunk, decodeBinaryChunk, isBinaryPayload } from "../utils/binaryDrawing";
 
 interface DrawingCanvasProps {
   socket: Socket | null;
@@ -61,6 +62,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const batchBufferRef = useRef<NormalizedPoint[]>([]);
   const batchTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const animFrameIdRef = useRef<number | null>(null);
+  const strokeSeqRef = useRef<number>(0);
 
   // Redraw complete canvas with Bezier curve smoothing
   const redrawCanvas = useCallback(() => {
@@ -161,14 +163,13 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const BATCH_INTERVAL_MS = 60;
   const MIN_POINT_DIST_SQ = 0.00001; // ~2-3px threshold to eliminate micro-jitter
 
-  // Flush queued points over socket (throttled every 60ms)
+  // Flush queued points over socket (throttled binary chunk)
   const flushBatch = useCallback(() => {
     if (!socket || !currentStrokeRef.current || batchBufferRef.current.length === 0) return;
 
-    socket.emit("draw:chunk", {
-      strokeId: currentStrokeRef.current.id,
-      points: [...batchBufferRef.current],
-    });
+    // Encode points into compact binary ArrayBuffer
+    const binaryChunk = encodeBinaryChunk(strokeSeqRef.current, batchBufferRef.current);
+    socket.emit("draw:chunk", binaryChunk);
 
     batchBufferRef.current = [];
   }, [socket]);
@@ -192,6 +193,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     const handleRemoteStart = (payload: StrokeStartPayload) => {
       const newStroke: Stroke = {
         id: payload.strokeId,
+        seq: payload.seq,
         color: payload.color,
         size: payload.size,
         points: [payload.startPoint],
@@ -200,17 +202,38 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       requestRedraw();
     };
 
-    // 4. Remote Stroke Chunk Stream (O(1) fast-path on last stroke)
-    const handleRemoteChunk = (payload: StrokeChunkPayload) => {
+    // 4. Remote Stroke Chunk Stream (Binary & JSON compatible)
+    const handleRemoteChunk = (payload: unknown) => {
+      // A. Binary Protocol Path
+      if (isBinaryPayload(payload)) {
+        const { strokeSeq, points } = decodeBinaryChunk(payload);
+        if (points.length === 0) return;
+
+        const strokes = strokesRef.current;
+        const lastStroke = strokes[strokes.length - 1];
+        const stroke =
+          lastStroke && lastStroke.seq === strokeSeq
+            ? lastStroke
+            : strokes.find((s) => s.seq === strokeSeq);
+
+        if (stroke) {
+          stroke.points.push(...points);
+          requestRedraw();
+        }
+        return;
+      }
+
+      // B. JSON Fallback Path
+      const jsonPayload = payload as StrokeChunkPayload;
       const strokes = strokesRef.current;
       const lastStroke = strokes[strokes.length - 1];
       const stroke =
-        lastStroke && lastStroke.id === payload.strokeId
+        lastStroke && lastStroke.id === jsonPayload.strokeId
           ? lastStroke
-          : strokes.find((s) => s.id === payload.strokeId);
+          : strokes.find((s) => s.id === jsonPayload.strokeId);
 
       if (stroke) {
-        stroke.points.push(...payload.points);
+        stroke.points.push(...jsonPayload.points);
         requestRedraw();
       }
     };
@@ -258,11 +281,14 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     if (!normPoint) return;
 
     isDrawingRef.current = true;
+    strokeSeqRef.current = (strokeSeqRef.current + 1) % 65535;
+    const seq = strokeSeqRef.current;
     const strokeId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const currentColor = isEraser ? "#FFFFFF" : color;
 
     const newStroke: Stroke = {
       id: strokeId,
+      seq,
       color: currentColor,
       size: brushSize,
       points: [normPoint],
@@ -275,6 +301,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     // Emit start to room
     socket?.emit("draw:start", {
       strokeId,
+      seq,
       color: currentColor,
       size: brushSize,
       startPoint: normPoint,

@@ -41,6 +41,7 @@ export interface NormalizedPoint {
 
 export interface Stroke {
   id: string;
+  seq?: number | undefined;
   color: string;
   size: number;
   points: NormalizedPoint[];
@@ -48,6 +49,7 @@ export interface Stroke {
 
 export interface StrokeStartPayload {
   strokeId: string;
+  seq?: number | undefined;
   color: string;
   size: number;
   startPoint: NormalizedPoint;

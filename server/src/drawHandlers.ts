@@ -1,5 +1,6 @@
 import { Server, Socket } from "socket.io";
 import { getRoom } from "./rooms.js";
+import { decodeBinaryChunk, isBinaryPayload } from "./binaryDrawing.js";
 
 export interface NormalizedPoint {
   x: number;
@@ -8,6 +9,7 @@ export interface NormalizedPoint {
 
 export interface Stroke {
   id: string;
+  seq?: number | undefined;
   color: string;
   size: number;
   points: NormalizedPoint[];
@@ -40,7 +42,7 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
   // 1. Stroke started
   socket.on(
     "draw:start",
-    (payload: { strokeId?: string; color?: string; size?: number; startPoint?: NormalizedPoint }) => {
+    (payload: { strokeId?: string; seq?: number; color?: string; size?: number; startPoint?: NormalizedPoint }) => {
       const roomId = socket.data.roomId as string | undefined;
       if (
         !roomId ||
@@ -54,6 +56,7 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
       if (!isDrawerAuthorized(roomId, socket.id)) return;
 
       const strokeId = payload.strokeId.slice(0, 50);
+      const seq = typeof payload.seq === "number" ? payload.seq : undefined;
       const color = typeof payload.color === "string" ? payload.color.slice(0, 20) : "#2E1065";
       const size = typeof payload.size === "number" && payload.size >= 1 && payload.size <= 50 ? payload.size : 6;
       const startPoint: NormalizedPoint = {
@@ -68,47 +71,73 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
       const strokes = roomDrawHistories.get(roomId)!;
       strokes.push({
         id: strokeId,
+        seq,
         color,
         size,
         points: [startPoint],
       });
 
-      socket.to(roomId).emit("draw:start", { strokeId, color, size, startPoint });
+      socket.to(roomId).emit("draw:start", {
+        strokeId,
+        ...(seq !== undefined ? { seq } : {}),
+        color,
+        size,
+        startPoint,
+      });
     }
   );
 
-  // 2. Stroke chunk streamed
-  socket.on("draw:chunk", (payload: { strokeId?: string; points?: NormalizedPoint[] }) => {
+  // 2. Stroke chunk streamed (Binary & JSON support)
+  socket.on("draw:chunk", (payload: unknown) => {
     const roomId = socket.data.roomId as string | undefined;
+    if (!roomId) return;
+    if (!isDrawerAuthorized(roomId, socket.id)) return;
+
+    // A. Binary Protocol Path
+    if (isBinaryPayload(payload)) {
+      const { strokeSeq, points } = decodeBinaryChunk(payload);
+      if (points.length === 0) return;
+
+      const strokes = roomDrawHistories.get(roomId);
+      if (strokes && strokes.length > 0) {
+        const lastStroke = strokes[strokes.length - 1];
+        if (lastStroke && lastStroke.seq === strokeSeq) {
+          lastStroke.points.push(...points);
+        } else {
+          const target = strokes.find((s) => s.seq === strokeSeq);
+          if (target) target.points.push(...points);
+        }
+      }
+
+      // Zero-copy binary broadcast directly to room
+      socket.to(roomId).emit("draw:chunk", payload);
+      return;
+    }
+
+    // B. JSON Fallback Path
+    const jsonPayload = payload as { strokeId?: string; points?: NormalizedPoint[] };
     if (
-      !roomId ||
-      typeof payload?.strokeId !== "string" ||
-      !Array.isArray(payload?.points) ||
-      payload.points.length === 0
+      typeof jsonPayload?.strokeId !== "string" ||
+      !Array.isArray(jsonPayload?.points) ||
+      jsonPayload.points.length === 0
     ) {
       return;
     }
-    if (!isDrawerAuthorized(roomId, socket.id)) return;
 
-    const strokeId = payload.strokeId.slice(0, 50);
-
-    // Cap points to 500 max and clamp coordinates to normalized [0, 1] range
-    const safePoints: NormalizedPoint[] = payload.points.slice(0, 500).map((p) => ({
+    const strokeId = jsonPayload.strokeId.slice(0, 50);
+    const safePoints: NormalizedPoint[] = jsonPayload.points.slice(0, 500).map((p) => ({
       x: Math.max(0, Math.min(1, typeof p?.x === "number" && !isNaN(p.x) ? p.x : 0)),
       y: Math.max(0, Math.min(1, typeof p?.y === "number" && !isNaN(p.y) ? p.y : 0)),
     }));
 
     const strokes = roomDrawHistories.get(roomId);
     if (strokes && strokes.length > 0) {
-      // O(1) fast-path: active chunk is almost always the most recent stroke
       const lastStroke = strokes[strokes.length - 1];
       if (lastStroke && lastStroke.id === strokeId) {
         lastStroke.points.push(...safePoints);
       } else {
         const currentStroke = strokes.find((s) => s.id === strokeId);
-        if (currentStroke) {
-          currentStroke.points.push(...safePoints);
-        }
+        if (currentStroke) currentStroke.points.push(...safePoints);
       }
     }
 

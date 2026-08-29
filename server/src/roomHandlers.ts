@@ -113,9 +113,10 @@ function handleCreate(socket: Socket) {
       joinSocketRoom(socket, room.id);
       socket.emit("room:created", { roomId: room.id, room: serializeRoom(room) });
 
-      // Async DB Persistence
-      dbCreateRoom(room.id, room.name, room.ownerId);
-      dbAddPlayer(room.id, socket.id, username, role);
+      // Async DB Persistence: sequence room creation before adding initial player
+      dbCreateRoom(room.id, room.name, room.ownerId).then(() => {
+        dbAddPlayer(room.id, socket.id, username, role);
+      });
     } catch (err) {
       emitError(socket, err);
     }

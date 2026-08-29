@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { getRoom } from "./rooms.js";
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
@@ -17,8 +18,10 @@ if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
  */
 export async function dbCreateRoom(id: string, name: string, ownerId: string) {
   try {
-    return await prisma.room.create({
-      data: {
+    return await prisma.room.upsert({
+      where: { id },
+      update: { name, ownerId },
+      create: {
         id,
         name,
         ownerId,
@@ -36,6 +39,21 @@ export async function dbCreateRoom(id: string, name: string, ownerId: string) {
  */
 export async function dbAddPlayer(roomId: string, id: string, username: string, role: "player" | "spectator") {
   try {
+    // Ensure parent Room exists to satisfy PostgreSQL foreign key constraint (Player_roomId_fkey)
+    const inMemoryRoom = getRoom(roomId);
+    if (inMemoryRoom) {
+      await prisma.room.upsert({
+        where: { id: roomId },
+        update: {},
+        create: {
+          id: roomId,
+          name: inMemoryRoom.name,
+          ownerId: inMemoryRoom.ownerId,
+          status: "WAITING",
+        },
+      });
+    }
+
     return await prisma.player.upsert({
       where: {
         roomId_username: {
