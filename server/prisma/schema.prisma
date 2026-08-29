@@ -1,0 +1,137 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum RoomStatus {
+  WAITING
+  WORD_SELECTION
+  ACTIVE_ROUND
+  ROUND_ENDING
+  COMPLETED
+}
+
+enum PlayerRole {
+  PLAYER
+  SPECTATOR
+}
+
+enum MessageType {
+  CHAT
+  CLOSE_GUESS
+  CORRECT_GUESS
+  SYSTEM
+}
+
+enum WordDifficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+model Room {
+  id          String        @id @default(uuid())
+  name        String
+  ownerId     String
+  status      RoomStatus    @default(WAITING)
+  createdAt   DateTime      @default(now())
+  abandonedAt DateTime?
+  completedAt DateTime?
+
+  players      Player[]
+  rounds       Round[]
+  chatMessages ChatMessage[]
+
+  @@index([status])
+  @@index([abandonedAt])
+  @@index([completedAt])
+}
+
+model Player {
+  id          String         @id @default(uuid())
+  roomId      String
+  room        Room           @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  socketId    String?
+  username    String
+  role        PlayerRole     @default(PLAYER)
+  score       Int            @default(0)
+  isConnected Boolean        @default(true)
+  joinedAt    DateTime       @default(now())
+
+  drawnRounds Round[]        @relation("DrawerRounds")
+  guesses     CorrectGuess[]
+  messages    ChatMessage[]
+
+  @@unique([roomId, username])
+  @@index([roomId])
+}
+
+model Round {
+  id              String         @id @default(uuid())
+  roomId          String
+  room            Room           @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  roundNumber     Int
+  drawerId        String
+  drawer          Player         @relation("DrawerRounds", fields: [drawerId], references: [id], onDelete: Cascade)
+  word            String
+  durationSeconds Int            @default(120)
+  startedAt       DateTime       @default(now())
+  endedAt         DateTime?
+
+  strokes        DrawingStroke[]
+  correctGuesses CorrectGuess[]
+
+  @@index([roomId])
+  @@index([drawerId])
+}
+
+model CorrectGuess {
+  id               String   @id @default(uuid())
+  roundId          String
+  round            Round    @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  playerId         String
+  player           Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  scoreAwarded     Int
+  timeTakenSeconds Float
+  guessedAt        DateTime @default(now())
+
+  @@unique([roundId, playerId])
+  @@index([roundId])
+}
+
+model DrawingStroke {
+  id          String   @id @default(uuid())
+  roundId     String
+  round       Round    @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  strokeOrder Int
+  color       String
+  size        Float
+  points      Json     // Array of { x: number, y: number } (normalized 0.0 to 1.0)
+  createdAt   DateTime @default(now())
+
+  @@index([roundId])
+}
+
+model ChatMessage {
+  id        String      @id @default(uuid())
+  roomId    String
+  room      Room        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  playerId  String?
+  player    Player?     @relation(fields: [playerId], references: [id], onDelete: SetNull)
+  message   String
+  type      MessageType @default(CHAT)
+  createdAt DateTime    @default(now())
+
+  @@index([roomId])
+}
+
+model Word {
+  id         Int            @id @default(autoincrement())
+  word       String         @unique
+  category   String         @default("general")
+  difficulty WordDifficulty @default(EASY)
+}

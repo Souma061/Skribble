@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { initialGameState } from "./game/GameEngine.js";
+import { GameEngine } from "./game/GameEngine.js";
 export const MAX_ACTIVE_PLAYERS = 15;
 export const MAX_SPECTATORS = 15;
 export const MAX_CONNECTIONS = 30;
@@ -42,6 +42,7 @@ export function getSpectatorCount(room) {
 export function createRoom(name, socketId, username, role = "player") {
     const normalizedUser = validateUsername(username);
     const now = Date.now();
+    const engine = new GameEngine();
     const room = {
         id: randomUUID(),
         ownerId: socketId,
@@ -53,6 +54,7 @@ export function createRoom(name, socketId, username, role = "player") {
                     id: socketId,
                     username: normalizedUser,
                     role,
+                    score: 0,
                     joinedAt: now,
                 },
             ],
@@ -60,10 +62,34 @@ export function createRoom(name, socketId, username, role = "player") {
         createdAt: now,
         abandonedAt: null,
         completedAt: null,
-        game: initialGameState(),
+        game: engine.getState(),
+        engine,
+        revealedIndices: new Set(),
+        timeLeft: 0,
+        correctGuesserIds: [],
     };
     rooms.set(room.id, room);
     return room;
+}
+export function startGame(roomId, socketId) {
+    const room = rooms.get(roomId);
+    if (!room)
+        throw new RoomError("ROOM_NOT_FOUND", "Room not found");
+    if (room.ownerId !== socketId) {
+        throw new RoomError("FORBIDDEN", "Only the room owner can start the game");
+    }
+    const eligiblePlayers = [...room.players.values()]
+        .filter((p) => p.role === "player")
+        .map((p) => p.id);
+    if (eligiblePlayers.length === 0) {
+        throw new RoomError("NO_ACTIVE_PLAYERS", "Need at least 1 active player to start the game");
+    }
+    const drawerId = room.engine.selectDrawer(eligiblePlayers);
+    room.game = room.engine.getState();
+    room.game.status = "WORD_SELECTION";
+    room.correctGuesserIds = [];
+    room.revealedIndices.clear();
+    return { room, drawerId };
 }
 export function joinRoom(roomId, socketId, username, role = "player", now = Date.now()) {
     const room = rooms.get(roomId);
@@ -104,9 +130,19 @@ export function joinRoom(roomId, socketId, username, role = "player", now = Date
         id: socketId,
         username: normalizedUser,
         role,
+        score: existingPlayer?.score ?? 0,
         joinedAt: existingPlayer?.joinedAt ?? now,
     });
     return room;
+}
+export function addPlayerScore(roomId, socketId, points) {
+    const room = rooms.get(roomId);
+    if (!room)
+        return;
+    const player = room.players.get(socketId);
+    if (player) {
+        player.score += points;
+    }
 }
 export function leaveRoom(roomId, socketId, now = Date.now()) {
     const room = rooms.get(roomId);
@@ -116,6 +152,10 @@ export function leaveRoom(roomId, socketId, now = Date.now()) {
     // If room is now empty, mark as abandoned
     if (room.players.size === 0) {
         room.abandonedAt = now;
+        if (room.timerInterval) {
+            clearInterval(room.timerInterval);
+            delete room.timerInterval;
+        }
     }
     else if (room.ownerId === socketId) {
         // Reassign ownership to earliest joined active player, or earliest spectator
@@ -128,9 +168,15 @@ export function leaveRoom(roomId, socketId, now = Date.now()) {
     return room;
 }
 export function deleteRoom(roomId) {
+    const room = rooms.get(roomId);
+    if (room?.timerInterval) {
+        clearInterval(room.timerInterval);
+    }
     return rooms.delete(roomId);
 }
 export function getRoom(roomId) {
+    if (!roomId)
+        return undefined;
     return rooms.get(roomId);
 }
 export function markRoomCompleted(roomId, now = Date.now()) {
@@ -148,8 +194,7 @@ export function sweepExpired(now = Date.now()) {
             room.abandonedAt !== null &&
             now - room.abandonedAt >= ABANDONED_MS;
         // 2. Completed rooms for >= 48 hours (2 days)
-        const isCompletedExpired = room.completedAt !== null &&
-            now - room.completedAt >= COMPLETED_MS;
+        const isCompletedExpired = room.completedAt !== null && now - room.completedAt >= COMPLETED_MS;
         if (isAbandonedExpired || isCompletedExpired) {
             rooms.delete(id);
             expired.push(id);
@@ -171,6 +216,8 @@ export function serializeRoom(room) {
         createdAt: room.createdAt,
         isAbandoned: room.abandonedAt !== null,
         isCompleted: room.completedAt !== null,
+        timeLeft: room.timeLeft,
+        correctGuesserCount: room.correctGuesserIds.length,
     };
 }
 export class RoomError extends Error {

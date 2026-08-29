@@ -3,14 +3,20 @@ import { GameEngine, initialGameState } from "./GameEngine.js";
 let failed = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log("  ok -", msg);
-  else { console.log("  FAIL -", msg); failed++; }
+  else {
+    console.log("  FAIL -", msg);
+    failed++;
+  }
 }
 
 const rand = () => 0; // deterministic: pick first candidate
 
 const engine = new GameEngine();
 assert(engine.getState().status === "WAITING", "starts in WAITING with roundNumber 0");
-assert(engine.getState().roundNumber === 0 && engine.getState().currentDrawerId === null, "initial game state");
+assert(
+  engine.getState().roundNumber === 0 && engine.getState().currentDrawerId === null,
+  "initial game state",
+);
 
 const players = ["A", "B", "C"];
 const first = engine.selectDrawer(players, rand);

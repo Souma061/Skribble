@@ -95,6 +95,11 @@ function App() {
     socketRef.current.emit("room:delete");
   };
 
+  const handleStartGame = () => {
+    if (!socketRef.current) return;
+    socketRef.current.emit("game:start");
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-[#FDF8F9] bg-[radial-gradient(#E9E4F7_1px,transparent_1px)] [background-size:20px_20px]">
       <Header
@@ -114,14 +119,12 @@ function App() {
           />
         ) : (
           <RoomView
+            socket={socketRef.current}
             room={room}
             currentSocketId={socketId}
             onLeaveRoom={handleLeaveRoom}
             onDeleteRoom={handleDeleteRoom}
-            onStartGame={() => {
-              // Future game start trigger
-              console.log("Start game triggered");
-            }}
+            onStartGame={handleStartGame}
           />
         )}
       </main>

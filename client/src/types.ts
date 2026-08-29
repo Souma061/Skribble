@@ -4,10 +4,11 @@ export interface Player {
   id: string;
   username: string;
   role: PlayerRole;
+  score: number;
   joinedAt: number;
 }
 
-export type GameStatus = "WAITING" | "WORD_SELECTION" | "ACTIVE_ROUND" | "ROUND_ENDING";
+export type GameStatus = "WAITING" | "WORD_SELECTION" | "ACTIVE_ROUND" | "ROUND_ENDING" | "COMPLETED";
 
 export interface GameState {
   status: GameStatus;
@@ -28,4 +29,37 @@ export interface RoomState {
   createdAt: number;
   isAbandoned: boolean;
   isCompleted: boolean;
+  timeLeft?: number;
+  correctGuesserCount?: number;
+}
+
+export interface NormalizedPoint {
+  x: number;
+  y: number;
+}
+
+export interface Stroke {
+  id: string;
+  color: string;
+  size: number;
+  points: NormalizedPoint[];
+}
+
+export interface StrokeStartPayload {
+  strokeId: string;
+  color: string;
+  size: number;
+  startPoint: NormalizedPoint;
+}
+
+export interface StrokeChunkPayload {
+  strokeId: string;
+  points: NormalizedPoint[];
+}
+
+export interface ChatMessage {
+  id: string;
+  username: string;
+  message: string;
+  type: "CHAT" | "CORRECT_GUESS" | "SYSTEM";
 }

@@ -1,3 +1,4 @@
+import { GameEngine } from "./game/GameEngine.js";
 import type { GameState } from "./game/types.js";
 export declare const MAX_ACTIVE_PLAYERS = 15;
 export declare const MAX_SPECTATORS = 15;
@@ -10,6 +11,7 @@ export interface Player {
     id: string;
     username: string;
     role: PlayerRole;
+    score: number;
     joinedAt: number;
 }
 export interface Room {
@@ -21,6 +23,13 @@ export interface Room {
     abandonedAt: number | null;
     completedAt: number | null;
     game: GameState;
+    engine: GameEngine;
+    currentWord?: string;
+    currentHint?: string;
+    revealedIndices: Set<number>;
+    timeLeft: number;
+    timerInterval?: NodeJS.Timeout;
+    correctGuesserIds: string[];
 }
 export declare function normalizeUsername(raw: string): string;
 export declare function validateUsername(raw: string): string;
@@ -28,10 +37,15 @@ export declare function isUsernameTaken(room: Room | undefined, username: string
 export declare function getActivePlayerCount(room: Room): number;
 export declare function getSpectatorCount(room: Room): number;
 export declare function createRoom(name: string, socketId: string, username: string, role?: PlayerRole): Room;
+export declare function startGame(roomId: string, socketId: string): {
+    room: Room;
+    drawerId: string;
+};
 export declare function joinRoom(roomId: string, socketId: string, username: string, role?: PlayerRole, now?: number): Room;
+export declare function addPlayerScore(roomId: string, socketId: string, points: number): void;
 export declare function leaveRoom(roomId: string, socketId: string, now?: number): Room;
 export declare function deleteRoom(roomId: string): boolean;
-export declare function getRoom(roomId: string): Room | undefined;
+export declare function getRoom(roomId: string | undefined): Room | undefined;
 export declare function markRoomCompleted(roomId: string, now?: number): Room;
 export declare function sweepExpired(now?: number): string[];
 export declare function serializeRoom(room: Room): {
@@ -47,6 +61,8 @@ export declare function serializeRoom(room: Room): {
     createdAt: number;
     isAbandoned: boolean;
     isCompleted: boolean;
+    timeLeft: number;
+    correctGuesserCount: number;
 };
 export declare class RoomError extends Error {
     code: string;
