@@ -157,7 +157,11 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     return () => resizeObserver.disconnect();
   }, [redrawCanvas]);
 
-  // Flush queued points over socket (throttled every 25ms)
+  // Batching interval: 60ms (~16 updates/sec, optimal for multiplayer canvas)
+  const BATCH_INTERVAL_MS = 60;
+  const MIN_POINT_DIST_SQ = 0.00001; // ~2-3px threshold to eliminate micro-jitter
+
+  // Flush queued points over socket (throttled every 60ms)
   const flushBatch = useCallback(() => {
     if (!socket || !currentStrokeRef.current || batchBufferRef.current.length === 0) return;
 
@@ -230,18 +234,28 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     };
   }, [socket, requestRedraw]);
 
+  // Helper to get normalized 4-decimal precision point
+  const getNormalizedPoint = (e: React.PointerEvent<HTMLCanvasElement>): NormalizedPoint | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+
+    const rawX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const rawY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+
+    return {
+      x: Math.round(rawX * 10000) / 10000,
+      y: Math.round(rawY * 10000) / 10000,
+    };
+  };
+
   // Pointer Down (Start Stroke)
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isDrawer || disabled) return;
 
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const normPoint: NormalizedPoint = {
-      x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
-      y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
-    };
+    const normPoint = getNormalizedPoint(e);
+    if (!normPoint) return;
 
     isDrawingRef.current = true;
     const strokeId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -266,23 +280,25 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       startPoint: normPoint,
     });
 
-    // Start 25ms batch timer
+    // Start 60ms batch timer (~16 updates/sec)
     if (batchTimerRef.current) clearInterval(batchTimerRef.current);
-    batchTimerRef.current = setInterval(flushBatch, 25);
+    batchTimerRef.current = setInterval(flushBatch, BATCH_INTERVAL_MS);
   };
 
-  // Pointer Move (Draw & Accumulate Points)
+  // Pointer Move (Draw & Accumulate Points with Distance Jitter Filter)
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isDrawer || disabled || !isDrawingRef.current || !currentStrokeRef.current) return;
 
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const normPoint = getNormalizedPoint(e);
+    if (!normPoint) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const normPoint: NormalizedPoint = {
-      x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
-      y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
-    };
+    // Jitter / distance filter: skip if movement is below threshold
+    const pts = currentStrokeRef.current.points;
+    if (pts.length > 0) {
+      const lastPt = pts[pts.length - 1];
+      const distSq = (normPoint.x - lastPt.x) ** 2 + (normPoint.y - lastPt.y) ** 2;
+      if (distSq < MIN_POINT_DIST_SQ) return;
+    }
 
     currentStrokeRef.current.points.push(normPoint);
     batchBufferRef.current.push(normPoint);
