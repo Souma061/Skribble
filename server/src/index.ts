@@ -10,7 +10,10 @@ dotenv.config();
 const app = express();
 const httpServer = createServer(app);
 
-app.use(cors());
+// Restrict CORS to the deployed client origin (set CLIENT_URL in your .env)
+const CLIENT_ORIGIN = process.env.CLIENT_URL || "https://skribble-eight.vercel.app";
+
+app.use(cors({ origin: CLIENT_ORIGIN }));
 app.use(express.json());
 
 const port = Number(process.env.PORT) || 9000;
@@ -21,7 +24,7 @@ app.get("/health", (_req, res) => {
 
 const io = new Server(httpServer, {
   cors: {
-    origin: "*",
+    origin: CLIENT_ORIGIN,
   },
 });
 

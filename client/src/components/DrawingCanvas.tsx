@@ -60,6 +60,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   // Batching point buffer
   const batchBufferRef = useRef<NormalizedPoint[]>([]);
   const batchTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const animFrameIdRef = useRef<number | null>(null);
 
   // Redraw complete canvas with Bezier curve smoothing
   const redrawCanvas = useCallback(() => {
@@ -75,6 +76,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       if (!stroke.points || stroke.points.length === 0) return;
 
       const pts = stroke.points;
+      const isEraserStroke = stroke.color.toLowerCase() === "#ffffff";
+      ctx.globalCompositeOperation = isEraserStroke ? "destination-out" : "source-over";
+
       ctx.beginPath();
       ctx.strokeStyle = stroke.color;
       ctx.lineWidth = stroke.size;
@@ -89,6 +93,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         ctx.arc(startX, startY, stroke.size / 2, 0, Math.PI * 2);
         ctx.fillStyle = stroke.color;
         ctx.fill();
+        ctx.globalCompositeOperation = "source-over";
         return;
       }
 
@@ -106,7 +111,26 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       }
 
       ctx.stroke();
+      ctx.globalCompositeOperation = "source-over";
     });
+  }, []);
+
+  // Coalesce high-frequency redraw requests to 60fps/120fps display refresh rate
+  const requestRedraw = useCallback(() => {
+    if (animFrameIdRef.current !== null) return;
+    animFrameIdRef.current = requestAnimationFrame(() => {
+      animFrameIdRef.current = null;
+      redrawCanvas();
+    });
+  }, [redrawCanvas]);
+
+  // Clean up animation frame on unmount
+  useEffect(() => {
+    return () => {
+      if (animFrameIdRef.current !== null) {
+        cancelAnimationFrame(animFrameIdRef.current);
+      }
+    };
   }, []);
 
   // Responsive Canvas Sizing (16:10 aspect ratio)
@@ -156,7 +180,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     const handleSync = (payload: { history: Stroke[] }) => {
       if (Array.isArray(payload.history)) {
         strokesRef.current = payload.history;
-        redrawCanvas();
+        requestRedraw();
       }
     };
 
@@ -169,22 +193,28 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         points: [payload.startPoint],
       };
       strokesRef.current.push(newStroke);
-      redrawCanvas();
+      requestRedraw();
     };
 
-    // 4. Remote Stroke Chunk Stream
+    // 4. Remote Stroke Chunk Stream (O(1) fast-path on last stroke)
     const handleRemoteChunk = (payload: StrokeChunkPayload) => {
-      const stroke = strokesRef.current.find((s) => s.id === payload.strokeId);
+      const strokes = strokesRef.current;
+      const lastStroke = strokes[strokes.length - 1];
+      const stroke =
+        lastStroke && lastStroke.id === payload.strokeId
+          ? lastStroke
+          : strokes.find((s) => s.id === payload.strokeId);
+
       if (stroke) {
         stroke.points.push(...payload.points);
-        redrawCanvas();
+        requestRedraw();
       }
     };
 
     // 5. Remote Clear
     const handleRemoteClear = () => {
       strokesRef.current = [];
-      redrawCanvas();
+      requestRedraw();
     };
 
     socket.on("draw:sync", handleSync);
@@ -198,7 +228,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       socket.off("draw:chunk", handleRemoteChunk);
       socket.off("draw:clear", handleRemoteClear);
     };
-  }, [socket, redrawCanvas]);
+  }, [socket, requestRedraw]);
 
   // Pointer Down (Start Stroke)
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -226,7 +256,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     currentStrokeRef.current = newStroke;
     strokesRef.current.push(newStroke);
-    redrawCanvas();
+    requestRedraw();
 
     // Emit start to room
     socket?.emit("draw:start", {
@@ -257,8 +287,8 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     currentStrokeRef.current.points.push(normPoint);
     batchBufferRef.current.push(normPoint);
 
-    // Instant local redraw
-    redrawCanvas();
+    // Smooth batched local redraw
+    requestRedraw();
   };
 
   // Pointer Up / Leave (Finalize Stroke)
@@ -279,7 +309,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const handleClear = () => {
     if (!isDrawer || disabled) return;
     strokesRef.current = [];
-    redrawCanvas();
+    requestRedraw();
     socket?.emit("draw:clear");
   };
 
@@ -287,7 +317,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const handleUndo = () => {
     if (!isDrawer || disabled || strokesRef.current.length === 0) return;
     strokesRef.current.pop();
-    redrawCanvas();
+    requestRedraw();
     socket?.emit("draw:undo");
   };
 

@@ -46,9 +46,9 @@ export const WordBanner: React.FC<WordBannerProps> = ({
             <span className="text-xl md:text-2xl font-black text-[#2E1065] tracking-[0.25em] font-mono">
               {blanks || "_ _ _ _"}
             </span>
-            {letterCount && (
+            {letterCount !== undefined && (
               <span className="text-xs font-bold text-[#9CA3AF]">
-                ({letterCount})
+                ({letterCount} {letterCount === 1 ? "letter" : "letters"})
               </span>
             )}
           </div>

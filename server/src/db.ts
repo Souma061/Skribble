@@ -108,3 +108,69 @@ export async function dbGetRoundStrokes(roundId: string) {
     return [];
   }
 }
+
+/**
+ * Fetch N random words from the Word bank table
+ */
+export async function dbGetRandomWords(count: number = 7): Promise<string[]> {
+  try {
+    const words = await prisma.$queryRaw<{ word: string }[]>`
+      SELECT word FROM "Word" ORDER BY RANDOM() LIMIT ${count}
+    `;
+    return words.map((w) => w.word);
+  } catch (err) {
+    console.error("[DB] Failed to fetch random words:", err);
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Simple per-socket token-bucket rate limiter (no external deps)
+// ---------------------------------------------------------------------------
+
+interface Bucket {
+  count: number;
+  windowStart: number;
+}
+
+// key = `${socketId}:${event}`
+const buckets = new Map<string, Bucket>();
+
+/**
+ * Returns true if the event is allowed, false if it should be dropped.
+ *
+ * @param socketId  - unique socket identifier
+ * @param event     - event name (e.g. "chat:send")
+ * @param limit     - max calls allowed per window
+ * @param windowMs  - rolling window size in milliseconds
+ */
+export function rateLimit(
+  socketId: string,
+  event: string,
+  limit: number,
+  windowMs: number,
+): boolean {
+  const key = `${socketId}:${event}`;
+  const now = Date.now();
+  const bucket = buckets.get(key);
+
+  if (!bucket || now - bucket.windowStart >= windowMs) {
+    // New window
+    buckets.set(key, { count: 1, windowStart: now });
+    return true;
+  }
+
+  if (bucket.count >= limit) return false;
+
+  bucket.count += 1;
+  return true;
+}
+
+/**
+ * Remove all rate-limit buckets for a socket (call on disconnect).
+ */
+export function socketCleanup(socketId: string) {
+  for (const key of buckets.keys()) {
+    if (key.startsWith(`${socketId}:`)) buckets.delete(key);
+  }
+}

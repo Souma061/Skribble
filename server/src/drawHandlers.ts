@@ -40,10 +40,26 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
   // 1. Stroke started
   socket.on(
     "draw:start",
-    (payload: { strokeId: string; color: string; size: number; startPoint: NormalizedPoint }) => {
+    (payload: { strokeId?: string; color?: string; size?: number; startPoint?: NormalizedPoint }) => {
       const roomId = socket.data.roomId as string | undefined;
-      if (!roomId || !payload.strokeId || !payload.startPoint) return;
+      if (
+        !roomId ||
+        typeof payload?.strokeId !== "string" ||
+        !payload.startPoint ||
+        typeof payload.startPoint.x !== "number" ||
+        typeof payload.startPoint.y !== "number"
+      ) {
+        return;
+      }
       if (!isDrawerAuthorized(roomId, socket.id)) return;
+
+      const strokeId = payload.strokeId.slice(0, 50);
+      const color = typeof payload.color === "string" ? payload.color.slice(0, 20) : "#2E1065";
+      const size = typeof payload.size === "number" && payload.size >= 1 && payload.size <= 50 ? payload.size : 6;
+      const startPoint: NormalizedPoint = {
+        x: Math.max(0, Math.min(1, payload.startPoint.x)),
+        y: Math.max(0, Math.min(1, payload.startPoint.y)),
+      };
 
       if (!roomDrawHistories.has(roomId)) {
         roomDrawHistories.set(roomId, []);
@@ -51,33 +67,52 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
 
       const strokes = roomDrawHistories.get(roomId)!;
       strokes.push({
-        id: payload.strokeId,
-        color: payload.color || "#2E1065",
-        size: payload.size || 6,
-        points: [payload.startPoint],
+        id: strokeId,
+        color,
+        size,
+        points: [startPoint],
       });
 
-      socket.to(roomId).emit("draw:start", payload);
+      socket.to(roomId).emit("draw:start", { strokeId, color, size, startPoint });
     }
   );
 
   // 2. Stroke chunk streamed
-  socket.on("draw:chunk", (payload: { strokeId: string; points: NormalizedPoint[] }) => {
+  socket.on("draw:chunk", (payload: { strokeId?: string; points?: NormalizedPoint[] }) => {
     const roomId = socket.data.roomId as string | undefined;
-    if (!roomId || !payload.strokeId || !Array.isArray(payload.points) || payload.points.length === 0) {
+    if (
+      !roomId ||
+      typeof payload?.strokeId !== "string" ||
+      !Array.isArray(payload?.points) ||
+      payload.points.length === 0
+    ) {
       return;
     }
     if (!isDrawerAuthorized(roomId, socket.id)) return;
 
+    const strokeId = payload.strokeId.slice(0, 50);
+
+    // Cap points to 500 max and clamp coordinates to normalized [0, 1] range
+    const safePoints: NormalizedPoint[] = payload.points.slice(0, 500).map((p) => ({
+      x: Math.max(0, Math.min(1, typeof p?.x === "number" && !isNaN(p.x) ? p.x : 0)),
+      y: Math.max(0, Math.min(1, typeof p?.y === "number" && !isNaN(p.y) ? p.y : 0)),
+    }));
+
     const strokes = roomDrawHistories.get(roomId);
-    if (strokes) {
-      const currentStroke = strokes.find((s) => s.id === payload.strokeId);
-      if (currentStroke) {
-        currentStroke.points.push(...payload.points);
+    if (strokes && strokes.length > 0) {
+      // O(1) fast-path: active chunk is almost always the most recent stroke
+      const lastStroke = strokes[strokes.length - 1];
+      if (lastStroke && lastStroke.id === strokeId) {
+        lastStroke.points.push(...safePoints);
+      } else {
+        const currentStroke = strokes.find((s) => s.id === strokeId);
+        if (currentStroke) {
+          currentStroke.points.push(...safePoints);
+        }
       }
     }
 
-    socket.to(roomId).emit("draw:chunk", payload);
+    socket.to(roomId).emit("draw:chunk", { strokeId, points: safePoints });
   });
 
   // 3. Clear canvas

@@ -36,6 +36,7 @@ export interface Room {
   timeLeft: number;
   timerInterval?: NodeJS.Timeout;
   correctGuesserIds: string[];
+  maxRounds: number; // total rounds per match = active player count when game starts
 }
 
 const rooms = new Map<string, Room>();
@@ -115,7 +116,8 @@ export function createRoom(
     engine,
     revealedIndices: new Set(),
     timeLeft: 0,
-    correctGuesserIds:[],
+    correctGuesserIds: [],
+    maxRounds: 0,
   };
   rooms.set(room.id, room);
   return room;
@@ -128,12 +130,25 @@ export function startGame(roomId: string, socketId: string): { room: Room; drawe
     throw new RoomError("FORBIDDEN", "Only the room owner can start the game");
   }
 
+  // Guard: cannot start a new round while one is already running
+  if (room.game.status === "ACTIVE_ROUND" || room.game.status === "WORD_SELECTION") {
+    throw new RoomError("GAME_IN_PROGRESS", "A round is already in progress");
+  }
+
   const eligiblePlayers = [...room.players.values()]
     .filter((p) => p.role === "player")
     .map((p) => p.id);
 
   if (eligiblePlayers.length === 0) {
     throw new RoomError("NO_ACTIVE_PLAYERS", "Need at least 1 active player to start the game");
+  }
+
+  // Fresh game: first start (WAITING) or Play Again after a completed match (COMPLETED)
+  // Reset the engine so roundNumber and previousDrawer start clean
+  if (room.game.status === "WAITING" || room.game.status === "COMPLETED") {
+    room.maxRounds = eligiblePlayers.length; // each active player draws once per match
+    room.engine = new GameEngine();
+    room.game = room.engine.getState();
   }
 
   const drawerId = room.engine.selectDrawer(eligiblePlayers);
@@ -297,6 +312,7 @@ export function serializeRoom(room: Room) {
     isCompleted: room.completedAt !== null,
     timeLeft: room.timeLeft,
     correctGuesserCount: room.correctGuesserIds.length,
+    maxRounds: room.maxRounds,
   };
 }
 

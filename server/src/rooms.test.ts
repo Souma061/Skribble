@@ -8,6 +8,7 @@ import {
   validateUsername,
   isUsernameTaken,
   markRoomCompleted,
+  startGame,
   MAX_ACTIVE_PLAYERS,
   MAX_SPECTATORS,
   MAX_CONNECTIONS,
@@ -158,6 +159,23 @@ assert(!expiredIds.includes(sweepRoom3.id), "does not sweep active room");
 const expiredIds2 = sweepExpired(baseTime + COMPLETED_MS + 1000);
 assert(expiredIds2.includes(sweepRoom2.id), "sweeps completed room after 48h");
 assert(getRoom(sweepRoom3.id) !== undefined, "active room persists");
+
+console.log("Testing Game Starting & In-Progress Guards...");
+const gameRoom = createRoom("Game Start Room", "owner_1", "HostAlice", "player");
+joinRoom(gameRoom.id, "player_2", "GuestBob", "player");
+joinRoom(gameRoom.id, "spec_1", "SpectatorCat", "spectator");
+
+const { drawerId } = startGame(gameRoom.id, "owner_1");
+assert(drawerId === "owner_1" || drawerId === "player_2", "selected an active player as drawer");
+assert(gameRoom.maxRounds === 2, "maxRounds set to active player count (2)");
+assert(gameRoom.game.status === "WORD_SELECTION", "game status transitions to WORD_SELECTION");
+
+try {
+  startGame(gameRoom.id, "owner_1");
+  assert(false, "should reject starting game when round is already in WORD_SELECTION or ACTIVE");
+} catch (e) {
+  assert(e instanceof RoomError && e.code === "GAME_IN_PROGRESS", "enforces GAME_IN_PROGRESS guard");
+}
 
 console.log(failed ? `\nRESULT: FAIL (${failed} errors)` : "\nRESULT: ALL ROOM TESTS PASSED");
 process.exit(failed ? 1 : 0);

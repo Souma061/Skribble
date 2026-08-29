@@ -31,6 +31,7 @@ export interface RoomState {
   isCompleted: boolean;
   timeLeft?: number;
   correctGuesserCount?: number;
+  maxRounds?: number;
 }
 
 export interface NormalizedPoint {
