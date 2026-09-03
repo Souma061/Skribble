@@ -1,5 +1,5 @@
+import { Pencil, Sparkles } from "lucide-react";
 import React, { useState } from "react";
-import { Sparkles, Pencil } from "lucide-react";
 
 interface WordModalProps {
   isOpen: boolean;
@@ -7,18 +7,14 @@ interface WordModalProps {
   onSubmitWord: (word: string, hint?: string) => void;
 }
 
-export const WordModal: React.FC<WordModalProps> = ({
-  isOpen,
-  suggestions,
-  onSubmitWord,
-}) => {
+export const WordModal: React.FC<WordModalProps> = ({ isOpen, suggestions, onSubmitWord }) => {
   const [customWord, setCustomWord] = useState("");
   const [customHint, setCustomHint] = useState("");
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
     if (!customWord.trim()) return;
     onSubmitWord(customWord.trim(), customHint.trim());
   };
@@ -30,11 +26,9 @@ export const WordModal: React.FC<WordModalProps> = ({
           <div className="w-12 h-12 rounded-2xl bg-[#EDE9FE] text-[#7C3AED] mx-auto flex items-center justify-center shadow-xs">
             <Pencil className="w-6 h-6" />
           </div>
-          <h2 className="text-2xl font-extrabold text-[#2E1065]">
-            Choose Your Word!
-          </h2>
+          <h2 className="text-2xl font-extrabold text-[#2E1065]">Choose Your Word!</h2>
           <p className="text-xs font-semibold text-[#6B7280]">
-            Pick a quick suggestion or type your own custom secret word.
+            Pick a quick suggestion or enter your own custom topic before time runs out.
           </p>
         </div>
 
@@ -50,7 +44,7 @@ export const WordModal: React.FC<WordModalProps> = ({
                 <button
                   key={sug}
                   type="button"
-                  onClick={() => onSubmitWord(sug, "")}
+                  onClick={() => onSubmitWord(sug)}
                   className="px-3.5 py-2 rounded-xl bg-[#F3E8FF] hover:bg-[#E9D5FF] text-[#6B21A8] text-xs font-extrabold btn-squishy cursor-pointer transition-all"
                 >
                   {sug}
@@ -60,43 +54,40 @@ export const WordModal: React.FC<WordModalProps> = ({
           </div>
         )}
 
-        {/* Custom Word Input Form */}
+        {/* Custom Topic */}
         <form onSubmit={handleSubmit} className="space-y-4 pt-2 border-t border-[#F3F4F6]">
           <div className="space-y-1.5">
-            <label className="text-xs font-bold text-[#374151]">
-              Custom Secret Word *
-            </label>
+            <label className="text-xs font-bold text-[#374151]">Custom Topic</label>
             <input
               type="text"
               required
-              maxLength={25}
+              minLength={2}
+              maxLength={40}
               value={customWord}
-              onChange={(e) => setCustomWord(e.target.value)}
-              placeholder="e.g. Sunflower, Pizza, Rocket"
+              onChange={(event) => setCustomWord(event.target.value)}
+              placeholder="e.g. Tom & Jerry"
               className="w-full px-4 py-3 rounded-2xl border border-[#E5E7EB] bg-[#F9FAFB] text-[#1F2937] text-sm font-bold focus:outline-none focus:ring-2 focus:ring-[#7C3AED]"
             />
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-bold text-[#374151]">
-              Optional Custom Hint
-            </label>
+            <label className="text-xs font-bold text-[#374151]">Optional Hint</label>
             <input
               type="text"
-              maxLength={40}
+              maxLength={80}
               value={customHint}
-              onChange={(e) => setCustomHint(e.target.value)}
-              placeholder="e.g. A yellow summer flower"
+              onChange={(event) => setCustomHint(event.target.value)}
+              placeholder="Do not include the answer"
               className="w-full px-4 py-2.5 rounded-2xl border border-[#E5E7EB] bg-[#F9FAFB] text-[#1F2937] text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-[#7C3AED]"
             />
           </div>
 
           <button
             type="submit"
-            disabled={!customWord.trim()}
-            className="w-full py-3.5 rounded-2xl bg-[#7C3AED] hover:bg-[#6D28D9] disabled:bg-[#D1D5DB] text-white text-sm font-extrabold btn-squishy cursor-pointer transition-colors shadow-md"
+            disabled={customWord.trim().length < 2}
+            className="w-full py-3.5 rounded-2xl bg-[#7C3AED] hover:bg-[#6D28D9] disabled:bg-[#D1D5DB] disabled:cursor-not-allowed text-white text-sm font-extrabold btn-squishy cursor-pointer transition-colors shadow-md"
           >
-            Start Drawing Now!
+            Use Custom Topic
           </button>
         </form>
       </div>

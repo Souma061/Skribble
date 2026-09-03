@@ -1,8 +1,14 @@
-import express from "express";
-import dotenv from "dotenv";
 import cors from "cors";
+import dotenv from "dotenv";
+import express from "express";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
+import {
+  metricsHandler,
+  metricsMiddleware,
+  requireMetricsAuth,
+  setupSocketMetrics,
+} from "./metrics.js";
 import { registerSocketHandlers } from "./roomHandlers.js";
 
 dotenv.config();
@@ -15,6 +21,7 @@ const CLIENT_ORIGIN = process.env.CLIENT_URL || "https://skribble-eight.vercel.a
 
 app.use(cors({ origin: CLIENT_ORIGIN }));
 app.use(express.json());
+app.use(metricsMiddleware);
 
 const port = Number(process.env.PORT) || 9000;
 
@@ -22,12 +29,15 @@ app.get("/health", (_req, res) => {
   res.send("OK");
 });
 
+app.get("/metrics", requireMetricsAuth, metricsHandler);
+
 const io = new Server(httpServer, {
   cors: {
     origin: CLIENT_ORIGIN,
   },
 });
 
+setupSocketMetrics(io);
 registerSocketHandlers(io);
 
 httpServer.listen(port, () => {

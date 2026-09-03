@@ -1,6 +1,6 @@
 /**
  * Binary Drawing Protocol Codec (Client)
- * 
+ *
  * Memory Layout per chunk:
  * [0..1] uint16: strokeSeq (1, 2, 3...)
  * [2..3] uint16: pointCount (N)
@@ -12,12 +12,15 @@ export interface DecodedChunk {
   points: { x: number; y: number }[];
 }
 
+const MAX_BINARY_POINTS_PER_CHUNK = 500;
+const EMPTY_CHUNK: DecodedChunk = { strokeSeq: 0, points: [] };
+
 /**
  * Packs stroke sequence ID and normalized float points into an ArrayBuffer
  */
 export function encodeBinaryChunk(
   strokeSeq: number,
-  points: { x: number; y: number }[]
+  points: { x: number; y: number }[],
 ): ArrayBuffer {
   const buffer = new ArrayBuffer(4 + points.length * 4);
   const view = new DataView(buffer);
@@ -41,16 +44,24 @@ export function encodeBinaryChunk(
  * Unpacks an ArrayBuffer or Uint8Array back into normalized float coordinates
  */
 export function decodeBinaryChunk(data: ArrayBuffer | Uint8Array): DecodedChunk {
-  const buffer = data instanceof Uint8Array ? data.buffer : data;
-  const view = new DataView(buffer);
+  const byteLength = data.byteLength;
+  if (byteLength < 4) return EMPTY_CHUNK;
+
+  const view =
+    data instanceof Uint8Array
+      ? new DataView(data.buffer, data.byteOffset, data.byteLength)
+      : new DataView(data);
 
   const strokeSeq = view.getUint16(0, true);
   const count = view.getUint16(2, true);
-  const points: { x: number; y: number }[] = [];
+  const requiredByteLength = 4 + count * 4;
+  if (count === 0 || count > MAX_BINARY_POINTS_PER_CHUNK || requiredByteLength > byteLength) {
+    return EMPTY_CHUNK;
+  }
 
+  const points: { x: number; y: number }[] = [];
   let offset = 4;
   for (let i = 0; i < count; i++) {
-    if (offset + 4 > buffer.byteLength) break;
     const rawX = view.getUint16(offset, true) / 65535;
     const rawY = view.getUint16(offset + 2, true) / 65535;
     points.push({
@@ -67,9 +78,5 @@ export function decodeBinaryChunk(data: ArrayBuffer | Uint8Array): DecodedChunk 
  * Helper to determine if an incoming payload is binary
  */
 export function isBinaryPayload(payload: unknown): payload is ArrayBuffer | Uint8Array {
-  return (
-    payload instanceof ArrayBuffer ||
-    payload instanceof Uint8Array ||
-    (typeof payload === "object" && payload !== null && "byteLength" in payload)
-  );
+  return payload instanceof ArrayBuffer || payload instanceof Uint8Array;
 }

@@ -35,6 +35,8 @@ export interface Room {
   revealedIndices: Set<number>;
   timeLeft: number;
   timerInterval?: NodeJS.Timeout;
+  wordSelectionTimeout?: NodeJS.Timeout;
+  wordSuggestions: string[];
   correctGuesserIds: string[];
   maxRounds: number; // total rounds per match = active player count when game starts
 }
@@ -84,6 +86,18 @@ export function getSpectatorCount(room: Room): number {
   return count;
 }
 
+export function getRoomCount(): number {
+  return rooms.size;
+}
+
+export function getTotalPlayerCount(): number {
+  let count = 0;
+  for (const room of rooms.values()) {
+    count += room.players.size;
+  }
+  return count;
+}
+
 export function createRoom(
   name: string,
   socketId: string,
@@ -116,6 +130,7 @@ export function createRoom(
     engine,
     revealedIndices: new Set(),
     timeLeft: 0,
+    wordSuggestions: [],
     correctGuesserIds: [],
     maxRounds: 0,
   };
@@ -139,21 +154,36 @@ export function startGame(roomId: string, socketId: string): { room: Room; drawe
     .filter((p) => p.role === "player")
     .map((p) => p.id);
 
-  if (eligiblePlayers.length === 0) {
-    throw new RoomError("NO_ACTIVE_PLAYERS", "Need at least 1 active player to start the game");
+  if (eligiblePlayers.length < 2) {
+    throw new RoomError("NOT_ENOUGH_PLAYERS", "At least two active players are required");
   }
 
   // Fresh game: first start (WAITING) or Play Again after a completed match (COMPLETED)
-  // Reset the engine so roundNumber and previousDrawer start clean
   if (room.game.status === "WAITING" || room.game.status === "COMPLETED") {
-    room.maxRounds = eligiblePlayers.length; // each active player draws once per match
+    if (room.game.status === "COMPLETED") {
+      for (const player of room.players.values()) {
+        player.score = 0;
+      }
+      room.completedAt = null;
+    }
+
+    room.maxRounds = eligiblePlayers.length;
     room.engine = new GameEngine();
     room.game = room.engine.getState();
+  }
+
+  if (room.wordSelectionTimeout) {
+    clearTimeout(room.wordSelectionTimeout);
+    delete room.wordSelectionTimeout;
   }
 
   const drawerId = room.engine.selectDrawer(eligiblePlayers);
   room.game = room.engine.getState();
   room.game.status = "WORD_SELECTION";
+  delete room.currentWord;
+  delete room.currentHint;
+  room.timeLeft = 0;
+  room.wordSuggestions = [];
   room.correctGuesserIds = [];
   room.revealedIndices.clear();
 
@@ -235,6 +265,9 @@ export function leaveRoom(roomId: string, socketId: string, now = Date.now()): R
   const room = rooms.get(roomId);
   if (!room) throw new RoomError("ROOM_NOT_FOUND", "Room not found");
 
+  if (room.engine.removeQueuedPlayer(socketId)) {
+    room.maxRounds = Math.max(room.game.roundNumber, room.maxRounds - 1);
+  }
   room.players.delete(socketId);
 
   // If room is now empty, mark as abandoned
@@ -243,6 +276,10 @@ export function leaveRoom(roomId: string, socketId: string, now = Date.now()): R
     if (room.timerInterval) {
       clearInterval(room.timerInterval);
       delete room.timerInterval;
+    }
+    if (room.wordSelectionTimeout) {
+      clearTimeout(room.wordSelectionTimeout);
+      delete room.wordSelectionTimeout;
     }
   } else if (room.ownerId === socketId) {
     // Reassign ownership to earliest joined active player, or earliest spectator
@@ -260,6 +297,9 @@ export function deleteRoom(roomId: string): boolean {
   const room = rooms.get(roomId);
   if (room?.timerInterval) {
     clearInterval(room.timerInterval);
+  }
+  if (room?.wordSelectionTimeout) {
+    clearTimeout(room.wordSelectionTimeout);
   }
   return rooms.delete(roomId);
 }
@@ -289,7 +329,7 @@ export function sweepExpired(now = Date.now()): string[] {
     const isCompletedExpired = room.completedAt !== null && now - room.completedAt >= COMPLETED_MS;
 
     if (isAbandonedExpired || isCompletedExpired) {
-      rooms.delete(id);
+      deleteRoom(id);
       expired.push(id);
     }
   }

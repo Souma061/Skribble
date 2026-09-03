@@ -1,8 +1,20 @@
-import { Server, Socket } from "socket.io";
 import { randomUUID } from "node:crypto";
+import { Server, Socket } from "socket.io";
+import { dbAddPlayer, dbCreateRoom, dbGetRandomWords, rateLimit, socketCleanup } from "./db.js";
+import { clearRoomStrokes, registerDrawHandlers } from "./drawHandlers.js";
+import {
+  doesMessageRevealWord,
+  findAllowedWord,
+  generateMaskedWord,
+  getLevenshteinDistance,
+  getNextRevealIndex,
+  isExactWordMatch,
+  validateCustomWord,
+} from "./game/wordUtils.js";
 import {
   type PlayerRole,
   RoomError,
+  addPlayerScore,
   createRoom,
   deleteRoom,
   getRoom,
@@ -12,25 +24,17 @@ import {
   markRoomCompleted,
   serializeRoom,
   startGame,
-  addPlayerScore,
   sweepExpired,
   validateUsername,
 } from "./rooms.js";
-import { registerDrawHandlers, clearRoomStrokes } from "./drawHandlers.js";
-import { dbCreateRoom, dbAddPlayer, dbGetRandomWords, rateLimit, socketCleanup } from "./db.js";
-import {
-  generateMaskedWord,
-  getLevenshteinDistance,
-  getNextRevealIndex,
-} from "./game/wordUtils.js";
-
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 const ROUND_DURATION_S = 120; // PRD §30: 120-second rounds
+const WORD_SELECTION_DURATION_MS = 20_000;
 
 export function registerSocketHandlers(io: Server) {
   io.on("connection", (socket) => {
     console.log(`Socket connected: ${socket.id}`);
-    socket.on("disconnect", handleDisconnect(socket));
+    socket.on("disconnect", handleDisconnect(io, socket));
 
     // Room lifecycle — max 5/min each
     socket.on("room:create", (payload) => {
@@ -43,7 +47,7 @@ export function registerSocketHandlers(io: Server) {
     });
     socket.on("room:leave", () => {
       if (!rateLimit(socket.id, "room:leave", 10, 60_000)) return;
-      handleLeave(socket)();
+      handleLeave(io, socket)();
     });
     socket.on("room:delete", () => {
       if (!rateLimit(socket.id, "room:delete", 5, 60_000)) return;
@@ -79,7 +83,7 @@ export function registerSocketHandlers(io: Server) {
   }, SWEEP_INTERVAL_MS).unref();
 }
 
-function handleDisconnect(socket: Socket) {
+function handleDisconnect(io: Server, socket: Socket) {
   return () => {
     const roomId = socket.data.roomId as string | undefined;
     if (roomId) {
@@ -89,7 +93,11 @@ function handleDisconnect(socket: Socket) {
           playerId: socket.id,
           newOwnerId: room.ownerId,
         });
-        socket.to(roomId).emit("room:state", serializeRoom(room));
+        if (shouldFinishAfterDrawerDeparture(room, socket.id)) {
+          finishRound(io, roomId, "The drawer left the round");
+        } else {
+          socket.to(roomId).emit("room:state", serializeRoom(room));
+        }
       } catch {
         // room already gone; nothing to notify
       } finally {
@@ -150,7 +158,7 @@ function handleJoin(socket: Socket) {
   };
 }
 
-function handleLeave(socket: Socket) {
+function handleLeave(io: Server, socket: Socket) {
   return () => {
     const roomId = socket.data.roomId as string | undefined;
     if (!roomId) return;
@@ -163,7 +171,11 @@ function handleLeave(socket: Socket) {
         playerId: socket.id,
         newOwnerId: room.ownerId,
       });
-      socket.to(roomId).emit("room:state", serializeRoom(room));
+      if (shouldFinishAfterDrawerDeparture(room, socket.id)) {
+        finishRound(io, roomId, "The drawer left the round");
+      } else {
+        socket.to(roomId).emit("room:state", serializeRoom(room));
+      }
     } catch (err) {
       emitError(socket, err);
     }
@@ -212,10 +224,30 @@ function handleStartGame(io: Server, socket: Socket) {
       const dbWords = await dbGetRandomWords(7);
       const suggestions = dbWords.length >= 3 ? dbWords : FALLBACK_WORDS;
 
-      // Prompt the drawer for word choice
-      io.to(drawerId).emit("round:prompt-word", { suggestions });
+      const currentRoom = getRoom(roomId);
+      if (
+        !currentRoom ||
+        currentRoom.game.status !== "WORD_SELECTION" ||
+        currentRoom.game.currentDrawerId !== drawerId
+      ) {
+        return;
+      }
 
-      const drawer = room.players.get(drawerId);
+      currentRoom.wordSuggestions = suggestions;
+      io.to(drawerId).emit("round:prompt-word", {
+        suggestions,
+        timeLimitSeconds: WORD_SELECTION_DURATION_MS / 1000,
+      });
+
+      currentRoom.wordSelectionTimeout = setTimeout(() => {
+        const fallbackWord = currentRoom.wordSuggestions[0];
+        if (fallbackWord) {
+          beginRound(io, currentRoom.id, drawerId, fallbackWord, "");
+        }
+      }, WORD_SELECTION_DURATION_MS);
+      currentRoom.wordSelectionTimeout.unref();
+
+      const drawer = currentRoom.players.get(drawerId);
       console.log(`Game started in room ${roomId}. Drawer: ${drawer?.username} (${drawerId})`);
     } catch (err) {
       emitError(socket, err);
@@ -224,44 +256,71 @@ function handleStartGame(io: Server, socket: Socket) {
 }
 
 function handleSetWord(io: Server, socket: Socket) {
-  return (payload: { word: string; hint?: string }) => {
+  return (payload: { word?: string; hint?: string }) => {
     const roomId = socket.data.roomId as string | undefined;
     const room = getRoom(roomId);
     if (!room || room.game.currentDrawerId !== socket.id || !payload.word?.trim()) return;
 
-    // Only allow during the word-selection phase (guards against mid-round manipulation)
     if (room.game.status !== "WORD_SELECTION") return;
 
-    const word = payload.word.trim().slice(0, 50); // cap at 50 characters (S-4)
-    const hint = (payload.hint ?? "").trim().slice(0, 100);
+    const word =
+      findAllowedWord(room.wordSuggestions, payload.word) ?? validateCustomWord(payload.word);
+    if (!word) {
+      socket.emit("room:error", {
+        code: "INVALID_WORD",
+        message:
+          "Custom topics must be 2–40 characters using letters, numbers, spaces, apostrophes, hyphens, or &",
+      });
+      return;
+    }
 
-    room.currentWord = word;
-    room.currentHint = hint;
-    room.game.status = "ACTIVE_ROUND";
-    room.revealedIndices.clear();
-    room.correctGuesserIds = [];
+    const hint = (payload.hint ?? "").trim().replace(/\s+/g, " ").slice(0, 80);
+    if (hint && doesMessageRevealWord(hint, word)) {
+      socket.emit("room:error", {
+        code: "INVALID_HINT",
+        message: "The hint cannot contain the secret topic",
+      });
+      return;
+    }
 
-    // Emit secret word to drawer
-    socket.emit("round:word-assigned", {
-      word,
-      hint,
-      timeLeft: ROUND_DURATION_S,
-    });
-
-    // Emit masked word to guessers
-    const blanks = generateMaskedWord(word, room.revealedIndices);
-    socket.to(room.id).emit("round:word-masked", {
-      blanks,
-      letterCount: word.length,
-      hint,
-      timeLeft: ROUND_DURATION_S,
-    });
-
-    io.to(room.id).emit("room:state", serializeRoom(room));
-
-    // Start countdown loop
-    startRoundTimer(io, room.id);
+    beginRound(io, room.id, socket.id, word, hint);
   };
+}
+
+function beginRound(io: Server, roomId: string, drawerId: string, word: string, hint: string) {
+  const room = getRoom(roomId);
+  if (!room || room.game.status !== "WORD_SELECTION" || room.game.currentDrawerId !== drawerId) {
+    return;
+  }
+
+  if (room.wordSelectionTimeout) {
+    clearTimeout(room.wordSelectionTimeout);
+    delete room.wordSelectionTimeout;
+  }
+
+  room.currentWord = word;
+  room.currentHint = hint;
+  room.wordSuggestions = [];
+  room.game.status = "ACTIVE_ROUND";
+  room.revealedIndices.clear();
+  room.correctGuesserIds = [];
+
+  io.to(drawerId).emit("round:word-assigned", {
+    word,
+    hint,
+    timeLeft: ROUND_DURATION_S,
+  });
+
+  const blanks = generateMaskedWord(word, room.revealedIndices);
+  io.to(room.id).except(drawerId).emit("round:word-masked", {
+    blanks,
+    letterCount: word.length,
+    hint,
+    timeLeft: ROUND_DURATION_S,
+  });
+
+  io.to(room.id).emit("room:state", serializeRoom(room));
+  startRoundTimer(io, room.id);
 }
 
 function startRoundTimer(io: Server, roomId: string) {
@@ -328,9 +387,9 @@ function handleChatSend(io: Server, socket: Socket) {
       !room.correctGuesserIds.includes(socket.id)
     ) {
       // 1. EXACT MATCH
-      if (guess === secret) {
+      if (isExactWordMatch(rawMessage, room.currentWord)) {
         room.correctGuesserIds.push(socket.id);
-        const points = 100 + (room.timeLeft * 2);
+        const points = 100 + room.timeLeft * 2;
 
         addPlayerScore(room.id, socket.id, points);
 
@@ -344,26 +403,29 @@ function handleChatSend(io: Server, socket: Socket) {
           type: "CORRECT_GUESS",
         });
 
-        // Check if all guessers have finished
-        const activeGuessers = [...room.players.values()].filter(
-          (p) => p.role === "player" && p.id !== room.game.currentDrawerId
-        );
-
-        if (room.correctGuesserIds.length >= activeGuessers.length) {
-          if (room.timerInterval) clearInterval(room.timerInterval);
-          delete room.timerInterval;
-          finishRound(io, room.id, "All players guessed correctly!");
-        }
+        // Correct guesses do not end the round early; the countdown remains authoritative.
         return;
       }
 
       // 2. CLOSE GUESS (1 letter typo away, skip computation if length difference > 1)
-      if (Math.abs(guess.length - secret.length) <= 1 && getLevenshteinDistance(guess, secret) === 1) {
+      if (
+        Math.abs(guess.length - secret.length) <= 1 &&
+        getLevenshteinDistance(guess, secret) === 1
+      ) {
         socket.emit("guess:close", {
           message: `"${rawMessage}" is so close! Check spelling!`,
         });
         return; // Don't broadcast typo to public chat
       }
+    }
+
+    // Never allow any participant to reveal the secret through public chat.
+    if (
+      room.game.status === "ACTIVE_ROUND" &&
+      room.currentWord &&
+      doesMessageRevealWord(rawMessage, room.currentWord)
+    ) {
+      return;
     }
 
     // Standard Chat Message
@@ -376,12 +438,37 @@ function handleChatSend(io: Server, socket: Socket) {
   };
 }
 
+function shouldFinishAfterDrawerDeparture(
+  room: NonNullable<ReturnType<typeof getRoom>>,
+  playerId: string,
+): boolean {
+  return (
+    room.players.size > 0 &&
+    room.game.currentDrawerId === playerId &&
+    (room.game.status === "WORD_SELECTION" || room.game.status === "ACTIVE_ROUND")
+  );
+}
+
 function finishRound(io: Server, roomId: string, reason: string) {
   const room = getRoom(roomId);
   if (!room) return;
 
+  if (room.timerInterval) {
+    clearInterval(room.timerInterval);
+    delete room.timerInterval;
+  }
+  if (room.wordSelectionTimeout) {
+    clearTimeout(room.wordSelectionTimeout);
+    delete room.wordSelectionTimeout;
+  }
+  room.wordSuggestions = [];
+
   // Flat drawer bonus — awarded once per round if at least one guesser got it right (B-4)
-  if (room.correctGuesserIds.length > 0 && room.game.currentDrawerId) {
+  if (
+    room.correctGuesserIds.length > 0 &&
+    room.game.currentDrawerId &&
+    room.players.has(room.game.currentDrawerId)
+  ) {
     addPlayerScore(room.id, room.game.currentDrawerId, 50);
   }
 

@@ -1,4 +1,10 @@
-import { GameEngine, initialGameState } from "./GameEngine.js";
+import { EngineError, GameEngine } from "./GameEngine.js";
+import {
+  doesMessageRevealWord,
+  findAllowedWord,
+  isExactWordMatch,
+  validateCustomWord,
+} from "./wordUtils.js";
 
 let failed = 0;
 function assert(cond: boolean, msg: string) {
@@ -20,21 +26,54 @@ assert(
 
 const players = ["A", "B", "C"];
 const first = engine.selectDrawer(players, rand);
-assert(first === "A", "round 1 drawer is A");
 assert(engine.getState().status === "WORD_SELECTION", "transitions to WORD_SELECTION");
 assert(engine.getState().roundNumber === 1, "roundNumber bumped to 1");
 
 const second = engine.selectDrawer(players, rand);
-assert(second === "B", "previous drawer (A) excluded, picks B");
-
 const third = engine.selectDrawer(players, rand);
-assert(third === "A", "previous drawer (B) excluded, picks from [A,C] -> A");
+assert(new Set([first, second, third]).size === 3, "each player draws exactly once per match");
 
-// Single-player edge: no other eligible, previous excluded -> falls back to same player
-const solo = new GameEngine(initialGameState());
-solo.selectDrawer(["X"], rand);
-const solo2 = solo.selectDrawer(["X"], rand);
-assert(solo2 === "X", "sole player remains drawer when no other eligible");
+try {
+  engine.selectDrawer(players, rand);
+  assert(false, "should reject a round after the drawer queue is exhausted");
+} catch (error) {
+  assert(
+    error instanceof EngineError && error.code === "NO_DRAWERS_LEFT",
+    "rejects rounds after every player has drawn",
+  );
+}
+
+const departureEngine = new GameEngine();
+departureEngine.selectDrawer(players, rand);
+assert(departureEngine.removeQueuedPlayer("C"), "removes a departing player from the queue");
+assert(
+  departureEngine.selectDrawer(
+    players.filter((id) => id !== "C"),
+    rand,
+  ) === "A",
+  "skips departed drawers",
+);
+
+assert(isExactWordMatch("  Red   Apple ", "red apple"), "normalizes exact guesses");
+assert(
+  findAllowedWord(["Sunflower", "Red Apple"], " red   apple ") === "Red Apple",
+  "accepts only a normalized server suggestion",
+);
+assert(
+  findAllowedWord(["Sunflower"], "Rocket") === undefined,
+  "distinguishes custom words from suggestions",
+);
+assert(validateCustomWord("Tom & Jerry") === "Tom & Jerry", "accepts a valid custom topic");
+assert(validateCustomWord("<script>") === undefined, "rejects unsafe custom-topic characters");
+assert(validateCustomWord("x".repeat(41)) === undefined, "rejects oversized custom topics");
+assert(
+  doesMessageRevealWord("The answer is red apple!", "Red Apple"),
+  "detects secret words in chat",
+);
+assert(
+  !doesMessageRevealWord("A caterpillar", "cat"),
+  "does not match secret fragments inside words",
+);
 
 console.log(failed ? `RESULT: FAIL (${failed})` : "RESULT: PASS");
 process.exit(failed ? 1 : 0);

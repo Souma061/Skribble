@@ -1,14 +1,16 @@
 services:
-  - type: web
-    name: skribble-server
-    env: node
-    plan: free
-    rootDir: server
-    buildCommand: pnpm install && pnpm exec prisma generate && pnpm run build
-    startCommand: pnpm run start
-    healthCheckPath: /health
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: DATABASE_URL
-        sync: false
+    - type: web
+      name: skribble-server
+      env: node
+      plan: free
+      rootDir: server
+      buildCommand: pnpm install && pnpm exec prisma generate && pnpm run build
+      startCommand: pnpm run start
+      healthCheckPath: /health
+      envVars:
+          - key: NODE_ENV
+            value: production
+          - key: DATABASE_URL
+            sync: false
+          - key: METRICS_TOKEN
+            generateValue: true

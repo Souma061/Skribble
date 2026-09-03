@@ -13,6 +13,7 @@ function App() {
   const [room, setRoom] = useState<RoomState | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [activeSocket, setActiveSocket] = useState<Socket | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
 
@@ -23,12 +24,14 @@ function App() {
     socketRef.current = socket;
 
     socket.on("connect", () => {
+      setActiveSocket(socket);
       setConnected(true);
       setSocketId(socket.id ?? null);
       console.log("Connected to Socket.IO:", socket.id);
     });
 
     socket.on("disconnect", () => {
+      setActiveSocket(null);
       setConnected(false);
       setSocketId(null);
       console.log("Disconnected from Socket.IO");
@@ -102,11 +105,7 @@ function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#FDF8F9] bg-[radial-gradient(#E9E4F7_1px,transparent_1px)] [background-size:20px_20px]">
-      <Header
-        connected={connected}
-        roomId={room?.id}
-        roomName={room?.name}
-      />
+      <Header connected={connected} roomId={room?.id} roomName={room?.name} />
 
       <main className="flex-1 flex flex-col items-center justify-center p-4">
         {!room ? (
@@ -119,7 +118,7 @@ function App() {
           />
         ) : (
           <RoomView
-            socket={socketRef.current}
+            socket={activeSocket}
             room={room}
             currentSocketId={socketId}
             onLeaveRoom={handleLeaveRoom}

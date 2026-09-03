@@ -12,6 +12,10 @@ export interface DecodedChunk {
   points: { x: number; y: number }[];
 }
 
+export const MAX_BINARY_POINTS_PER_CHUNK = 500;
+
+const EMPTY_CHUNK: DecodedChunk = { strokeSeq: 0, points: [] };
+
 /**
  * Decodes a raw Node.js Buffer, ArrayBuffer, or Uint8Array into normalized coordinates
  */
@@ -30,13 +34,18 @@ export function decodeBinaryChunk(data: Buffer | ArrayBuffer | Uint8Array): Deco
     byteLength = data.byteLength;
   }
 
+  if (byteLength < 4) return EMPTY_CHUNK;
+
   const strokeSeq = view.getUint16(0, true);
   const count = view.getUint16(2, true);
-  const points: { x: number; y: number }[] = [];
+  const requiredByteLength = 4 + count * 4;
+  if (count === 0 || count > MAX_BINARY_POINTS_PER_CHUNK || requiredByteLength > byteLength) {
+    return EMPTY_CHUNK;
+  }
 
+  const points: { x: number; y: number }[] = [];
   let offset = 4;
   for (let i = 0; i < count; i++) {
-    if (offset + 4 > byteLength) break;
     const rawX = view.getUint16(offset, true) / 65535;
     const rawY = view.getUint16(offset + 2, true) / 65535;
     points.push({
@@ -54,9 +63,6 @@ export function decodeBinaryChunk(data: Buffer | ArrayBuffer | Uint8Array): Deco
  */
 export function isBinaryPayload(payload: unknown): payload is Buffer | ArrayBuffer | Uint8Array {
   return (
-    Buffer.isBuffer(payload) ||
-    payload instanceof ArrayBuffer ||
-    payload instanceof Uint8Array ||
-    (typeof payload === "object" && payload !== null && "byteLength" in payload)
+    Buffer.isBuffer(payload) || payload instanceof ArrayBuffer || payload instanceof Uint8Array
   );
 }

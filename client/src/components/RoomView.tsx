@@ -1,22 +1,13 @@
-import React, { useState, useEffect } from "react";
+import { Check, Copy, Crown, Eye, LogOut, Palette, Play, Trash2 } from "lucide-react";
+import React, { useEffect, useState } from "react";
 import { Socket } from "socket.io-client";
-import {
-  Crown,
-  Copy,
-  Check,
-  Play,
-  LogOut,
-  Trash2,
-  Palette,
-  Eye,
-} from "lucide-react";
-import { DrawingCanvas } from "./DrawingCanvas";
-import { WordModal } from "./WordModal";
-import { WordBanner } from "./WordBanner";
+import type { ChatMessage, RoomState } from "../types";
 import { ChatBox } from "./ChatBox";
-import { RoundEndModal } from "./RoundEndModal";
+import { DrawingCanvas } from "./DrawingCanvas";
 import { GameOverModal } from "./GameOverModal";
-import type { RoomState, ChatMessage } from "../types";
+import { RoundEndModal } from "./RoundEndModal";
+import { WordBanner } from "./WordBanner";
+import { WordModal } from "./WordModal";
 
 interface RoomViewProps {
   socket: Socket | null;
@@ -56,7 +47,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
   const [maskedBlanks, setMaskedBlanks] = useState<string>("");
   const [letterCount, setLetterCount] = useState<number | undefined>();
   const [currentHint, setCurrentHint] = useState<string | undefined>();
-  const [timeLeft, setTimeLeft] = useState<number>(80);
+  const [timeLeft, setTimeLeft] = useState<number>(120);
 
   // Round End / Game Over Modals State
   const [roundEndData, setRoundEndData] = useState<{ word: string; reason: string } | null>(null);
@@ -97,7 +88,12 @@ export const RoomView: React.FC<RoomViewProps> = ({
     };
 
     // 3. Masked Word for Guessers
-    const handleWordMasked = (payload: { blanks: string; letterCount: number; hint?: string; timeLeft: number }) => {
+    const handleWordMasked = (payload: {
+      blanks: string;
+      letterCount: number;
+      hint?: string;
+      timeLeft: number;
+    }) => {
       setMaskedBlanks(payload.blanks);
       setLetterCount(payload.letterCount);
       setCurrentHint(payload.hint);
@@ -189,6 +185,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
       <GameOverModal
         isOpen={room.game.status === "COMPLETED"}
         players={room.players}
+        isOwner={isOwner}
         onPlayAgain={handleNextRoundFromModal}
         onLeaveRoom={onLeaveRoom}
       />
@@ -197,21 +194,21 @@ export const RoomView: React.FC<RoomViewProps> = ({
       <div className="w-full bg-white rounded-3xl p-6 border border-[#E9E4F7] pastel-card flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="text-2xl md:text-3xl font-extrabold text-[#2E1065]">
-              {room.name}
-            </h2>
-            <span className={`px-3.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
-              room.game.status === "ACTIVE_ROUND"
-                ? "bg-[#D1FAE5] text-[#065F46] animate-pulse"
-                : room.game.status === "COMPLETED"
-                ? "bg-[#FEF3C7] text-[#B45309]"
-                : "bg-[#E9E4F7] text-[#6D28D9]"
-            }`}>
+            <h2 className="text-2xl md:text-3xl font-extrabold text-[#2E1065]">{room.name}</h2>
+            <span
+              className={`px-3.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
+                room.game.status === "ACTIVE_ROUND"
+                  ? "bg-[#D1FAE5] text-[#065F46] animate-pulse"
+                  : room.game.status === "COMPLETED"
+                    ? "bg-[#FEF3C7] text-[#B45309]"
+                    : "bg-[#E9E4F7] text-[#6D28D9]"
+              }`}
+            >
               {room.game.status === "ACTIVE_ROUND"
                 ? `Round ${room.game.roundNumber} • Drawing`
                 : room.game.status === "COMPLETED"
-                ? "Match Completed"
-                : "Waiting for Host"}
+                  ? "Match Completed"
+                  : "Waiting for Host"}
             </span>
           </div>
           <p className="text-sm font-semibold text-[#6B7280] mt-1">
@@ -250,10 +247,11 @@ export const RoomView: React.FC<RoomViewProps> = ({
             isDrawer={
               room.game.status === "ACTIVE_ROUND"
                 ? isDrawer
-                : isOwner
+                : room.game.status === "WAITING" && isOwner
             }
             drawerName={
-              room.players.find((p) => p.id === (room.game.currentDrawerId || room.ownerId))?.username || "Host"
+              room.players.find((p) => p.id === (room.game.currentDrawerId || room.ownerId))
+                ?.username || "Host"
             }
           />
         </div>
@@ -303,9 +301,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
                     </div>
                   </div>
 
-                  {isThisPlayerOwner && (
-                    <Crown className="w-4 h-4 text-[#F59E0B] shrink-0" />
-                  )}
+                  {isThisPlayerOwner && <Crown className="w-4 h-4 text-[#F59E0B] shrink-0" />}
                 </div>
               );
             })}
@@ -375,14 +371,14 @@ export const RoomView: React.FC<RoomViewProps> = ({
           </div>
 
           {/* Host Start Game Button */}
-          {isOwner && (
+          {isOwner && room.game.status === "WAITING" && (
             <button
               onClick={onStartGame}
-              disabled={activePlayers.length === 0}
+              disabled={activePlayers.length < 2}
               className="px-8 py-3.5 rounded-2xl bg-[#7C3AED] hover:bg-[#6D28D9] disabled:bg-[#D1D5DB] disabled:cursor-not-allowed text-white text-base font-extrabold shadow-md btn-squishy flex items-center gap-2 cursor-pointer transition-colors"
             >
               <Play className="w-5 h-5 fill-white" />
-              {room.game.status === "ACTIVE_ROUND" ? "Next Turn / Drawer" : "Start Game Now"}
+              Start Game Now
             </button>
           )}
         </div>

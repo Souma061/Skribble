@@ -1,6 +1,13 @@
 import { Server, Socket } from "socket.io";
-import { getRoom } from "./rooms.js";
 import { decodeBinaryChunk, isBinaryPayload } from "./binaryDrawing.js";
+import { rateLimit } from "./db.js";
+import {
+  drawingBytesCounter,
+  drawingChunksCounter,
+  drawingPointsCounter,
+  drawingStrokesCounter,
+} from "./metrics.js";
+import { getRoom } from "./rooms.js";
 
 export interface NormalizedPoint {
   x: number;
@@ -21,6 +28,14 @@ export function getRoomStrokes(roomId: string): Stroke[] {
   return roomDrawHistories.get(roomId) || [];
 }
 
+export function getTotalCachedStrokesCount(): number {
+  let count = 0;
+  for (const strokes of roomDrawHistories.values()) {
+    count += strokes.length;
+  }
+  return count;
+}
+
 export function clearRoomStrokes(roomId: string) {
   roomDrawHistories.delete(roomId);
 }
@@ -34,15 +49,22 @@ function isDrawerAuthorized(roomId: string, socketId: string): boolean {
     return room.game.currentDrawerId === socketId;
   }
 
-  // When game is WAITING in the lobby: only the room owner can test draw
-  return room.ownerId === socketId;
+  // In the lobby, only the owner can test draw. End-state canvases are read-only.
+  return room.game.status === "WAITING" && room.ownerId === socketId;
 }
 
 export function registerDrawHandlers(io: Server, socket: Socket) {
-  // 1. Stroke started
+  // 1. Stroke started — max 60/min (one per pointer-down, not per frame)
   socket.on(
     "draw:start",
-    (payload: { strokeId?: string; seq?: number; color?: string; size?: number; startPoint?: NormalizedPoint }) => {
+    (payload: {
+      strokeId?: string;
+      seq?: number;
+      color?: string;
+      size?: number;
+      startPoint?: NormalizedPoint;
+    }) => {
+      if (!rateLimit(socket.id, "draw:start", 60, 60_000)) return;
       const roomId = socket.data.roomId as string | undefined;
       if (
         !roomId ||
@@ -58,7 +80,10 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
       const strokeId = payload.strokeId.slice(0, 50);
       const seq = typeof payload.seq === "number" ? payload.seq : undefined;
       const color = typeof payload.color === "string" ? payload.color.slice(0, 20) : "#2E1065";
-      const size = typeof payload.size === "number" && payload.size >= 1 && payload.size <= 50 ? payload.size : 6;
+      const size =
+        typeof payload.size === "number" && payload.size >= 1 && payload.size <= 50
+          ? payload.size
+          : 6;
       const startPoint: NormalizedPoint = {
         x: Math.max(0, Math.min(1, payload.startPoint.x)),
         y: Math.max(0, Math.min(1, payload.startPoint.y)),
@@ -77,6 +102,9 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
         points: [startPoint],
       });
 
+      drawingStrokesCounter.inc({ action: "start" });
+      drawingPointsCounter.inc({ format: "json" }, 1);
+
       socket.to(roomId).emit("draw:start", {
         strokeId,
         ...(seq !== undefined ? { seq } : {}),
@@ -84,19 +112,40 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
         size,
         startPoint,
       });
-    }
+    },
   );
 
-  // 2. Stroke chunk streamed (Binary & JSON support)
+  // 2. Stroke chunk streamed — max 30/s (client batches at ~60 ms; Binary & JSON support)
   socket.on("draw:chunk", (payload: unknown) => {
+    if (!rateLimit(socket.id, "draw:chunk", 30, 1_000)) return;
     const roomId = socket.data.roomId as string | undefined;
     if (!roomId) return;
     if (!isDrawerAuthorized(roomId, socket.id)) return;
 
     // A. Binary Protocol Path
     if (isBinaryPayload(payload)) {
-      const { strokeSeq, points } = decodeBinaryChunk(payload);
+      let decoded;
+      try {
+        decoded = decodeBinaryChunk(payload);
+      } catch {
+        return;
+      }
+
+      const { strokeSeq, points } = decoded;
       if (points.length === 0) return;
+
+      const byteLength =
+        payload instanceof ArrayBuffer
+          ? payload.byteLength
+          : typeof Buffer !== "undefined" && Buffer.isBuffer(payload)
+            ? payload.length
+            : ArrayBuffer.isView(payload)
+              ? payload.byteLength
+              : 0;
+
+      drawingChunksCounter.inc({ format: "binary" });
+      drawingPointsCounter.inc({ format: "binary" }, points.length);
+      drawingBytesCounter.inc({ format: "binary" }, byteLength);
 
       const strokes = roomDrawHistories.get(roomId);
       if (strokes && strokes.length > 0) {
@@ -130,6 +179,10 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
       y: Math.max(0, Math.min(1, typeof p?.y === "number" && !isNaN(p.y) ? p.y : 0)),
     }));
 
+    drawingChunksCounter.inc({ format: "json" });
+    drawingPointsCounter.inc({ format: "json" }, safePoints.length);
+    drawingBytesCounter.inc({ format: "json" }, JSON.stringify(jsonPayload).length);
+
     const strokes = roomDrawHistories.get(roomId);
     if (strokes && strokes.length > 0) {
       const lastStroke = strokes[strokes.length - 1];
@@ -144,31 +197,36 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
     socket.to(roomId).emit("draw:chunk", { strokeId, points: safePoints });
   });
 
-  // 3. Clear canvas
+  // 3. Clear canvas — max 10/min
   socket.on("draw:clear", () => {
+    if (!rateLimit(socket.id, "draw:clear", 10, 60_000)) return;
     const roomId = socket.data.roomId as string | undefined;
     if (!roomId) return;
     if (!isDrawerAuthorized(roomId, socket.id)) return;
 
+    drawingStrokesCounter.inc({ action: "clear" });
     roomDrawHistories.set(roomId, []);
     io.to(roomId).emit("draw:clear");
   });
 
-  // 4. Undo last stroke
+  // 4. Undo last stroke — max 10/min
   socket.on("draw:undo", () => {
+    if (!rateLimit(socket.id, "draw:undo", 10, 60_000)) return;
     const roomId = socket.data.roomId as string | undefined;
     if (!roomId) return;
     if (!isDrawerAuthorized(roomId, socket.id)) return;
 
     const strokes = roomDrawHistories.get(roomId);
     if (strokes && strokes.length > 0) {
+      drawingStrokesCounter.inc({ action: "undo" });
       strokes.pop();
       io.to(roomId).emit("draw:sync", { history: strokes });
     }
   });
 
-  // 5. Request sync (on initial load / reconnect)
+  // 5. Request sync (on initial load / reconnect) — max 10/min
   socket.on("draw:request-sync", () => {
+    if (!rateLimit(socket.id, "draw:request-sync", 10, 60_000)) return;
     const roomId = socket.data.roomId as string | undefined;
     if (!roomId) return;
 

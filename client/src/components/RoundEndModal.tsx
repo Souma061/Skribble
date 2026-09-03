@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react";
-import { Sparkles, Trophy, ArrowRight } from "lucide-react";
+import { ArrowRight, Sparkles, Trophy } from "lucide-react";
+import React from "react";
 import type { Player } from "../types";
 
 interface RoundEndModalProps {
@@ -19,27 +19,6 @@ export const RoundEndModal: React.FC<RoundEndModalProps> = ({
   players,
   onNextRound,
 }) => {
-  const [countdown, setCountdown] = useState(6);
-
-  useEffect(() => {
-    if (!isOpen) {
-      setCountdown(6);
-      return;
-    }
-
-    const timer = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [isOpen]);
-
   if (!isOpen) return null;
 
   const sortedPlayers = [...players]
@@ -54,12 +33,8 @@ export const RoundEndModal: React.FC<RoundEndModalProps> = ({
           <div className="w-14 h-14 rounded-2xl bg-[#EDE9FE] text-[#7C3AED] mx-auto flex items-center justify-center shadow-xs animate-bounce">
             <Sparkles className="w-7 h-7 text-[#7C3AED]" />
           </div>
-          <h2 className="text-2xl font-black text-[#2E1065]">
-            Round Over!
-          </h2>
-          <p className="text-xs font-bold text-[#6B7280]">
-            {reason}
-          </p>
+          <h2 className="text-2xl font-black text-[#2E1065]">Round Over!</h2>
+          <p className="text-xs font-bold text-[#6B7280]">{reason}</p>
         </div>
 
         {/* Revealed Secret Word Card */}
@@ -85,16 +60,10 @@ export const RoundEndModal: React.FC<RoundEndModalProps> = ({
                 className="flex items-center justify-between p-2 rounded-xl bg-[#F9FAFB] border border-[#F3F4F6] text-xs"
               >
                 <div className="flex items-center gap-2">
-                  <span className="font-extrabold text-[#7C3AED] w-4">
-                    #{idx + 1}
-                  </span>
-                  <span className="font-bold text-[#374151]">
-                    {player.username}
-                  </span>
+                  <span className="font-extrabold text-[#7C3AED] w-4">#{idx + 1}</span>
+                  <span className="font-bold text-[#374151]">{player.username}</span>
                 </div>
-                <span className="font-black text-[#6D28D9]">
-                  {player.score || 0} pts
-                </span>
+                <span className="font-black text-[#6D28D9]">{player.score || 0} pts</span>
               </div>
             ))}
           </div>
@@ -112,7 +81,7 @@ export const RoundEndModal: React.FC<RoundEndModalProps> = ({
             </button>
           ) : (
             <div className="text-xs font-bold text-[#7C3AED] bg-[#EDE9FE] py-2.5 px-4 rounded-2xl animate-pulse">
-              Waiting for host to start next turn... ({countdown}s)
+              Waiting for host to start the next turn...
             </div>
           )}
         </div>

@@ -1,20 +1,18 @@
 import {
-  createRoom,
-  joinRoom,
-  leaveRoom,
-  deleteRoom,
-  getRoom,
-  sweepExpired,
-  validateUsername,
-  isUsernameTaken,
-  markRoomCompleted,
-  startGame,
-  MAX_ACTIVE_PLAYERS,
-  MAX_SPECTATORS,
-  MAX_CONNECTIONS,
   ABANDONED_MS,
   COMPLETED_MS,
+  createRoom,
+  getRoom,
+  isUsernameTaken,
+  joinRoom,
+  leaveRoom,
+  markRoomCompleted,
+  MAX_ACTIVE_PLAYERS,
+  MAX_SPECTATORS,
   RoomError,
+  startGame,
+  sweepExpired,
+  validateUsername,
 } from "./rooms.js";
 
 let failed = 0;
@@ -30,7 +28,10 @@ function assert(cond: boolean, msg: string) {
 console.log("Testing Username Validation...");
 try {
   assert(validateUsername("Alice") === "Alice", "valid username Alice");
-  assert(validateUsername("  Bob_123  ") === "Bob_123", "trims and accepts alphanumeric + underscore");
+  assert(
+    validateUsername("  Bob_123  ") === "Bob_123",
+    "trims and accepts alphanumeric + underscore",
+  );
   assert(validateUsername("Cool Player") === "Cool Player", "accepts spaces");
 } catch (e) {
   assert(false, `Unexpected error in valid usernames: ${e}`);
@@ -86,7 +87,10 @@ try {
   joinRoom(capRoom.id, "p_15", "Player_15", "player");
   assert(false, "should reject 16th active player");
 } catch (e) {
-  assert(e instanceof RoomError && e.code === "ACTIVE_PLAYERS_FULL", "enforces 15 active player limit");
+  assert(
+    e instanceof RoomError && e.code === "ACTIVE_PLAYERS_FULL",
+    "enforces 15 active player limit",
+  );
 }
 
 // Should still allow joining as spectator
@@ -102,7 +106,10 @@ try {
   joinRoom(capRoom.id, "s_15", "Spectator_15", "spectator");
   assert(false, "should reject 16th spectator / 31st connection");
 } catch (e) {
-  assert(e instanceof RoomError && (e.code === "ROOM_FULL" || e.code === "SPECTATORS_FULL"), "enforces max connection limit");
+  assert(
+    e instanceof RoomError && (e.code === "ROOM_FULL" || e.code === "SPECTATORS_FULL"),
+    "enforces max connection limit",
+  );
 }
 
 console.log("Testing Owner Transfer on Leave...");
@@ -116,14 +123,20 @@ assert(ownerRoom.ownerId === "guest_sock", "ownership transferred to next active
 assert(ownerRoom.abandonedAt === null, "room is not marked abandoned while players remain");
 
 leaveRoom(ownerRoom.id, "guest_sock");
-assert(ownerRoom.ownerId === "spec_sock", "ownership transferred to remaining spectator SpecCharlie");
+assert(
+  ownerRoom.ownerId === "spec_sock",
+  "ownership transferred to remaining spectator SpecCharlie",
+);
 assert(ownerRoom.abandonedAt === null, "room still not abandoned");
 
 console.log("Testing Abandonment Lifecycle...");
 const baseTime = 1000000;
 leaveRoom(ownerRoom.id, "spec_sock", baseTime);
 assert(ownerRoom.players.size === 0, "all players left");
-assert(ownerRoom.abandonedAt === baseTime, "room marked abandoned at baseTime when last player leaves");
+assert(
+  ownerRoom.abandonedAt === baseTime,
+  "room marked abandoned at baseTime when last player leaves",
+);
 
 // Rejoining before 24h un-abandons the room
 const revivedRoom = joinRoom(ownerRoom.id, "rejoin_sock", "NewHero", "player", baseTime + 1000);
@@ -139,7 +152,10 @@ try {
   joinRoom(revivedRoom.id, "late_sock", "LateGuy", "player", baseTime + ABANDONED_MS + 1000);
   assert(false, "should reject joining expired abandoned room");
 } catch (e) {
-  assert(e instanceof RoomError && e.code === "ROOM_ABANDONED", "rejects joining abandoned room after 24h");
+  assert(
+    e instanceof RoomError && e.code === "ROOM_ABANDONED",
+    "rejects joining abandoned room after 24h",
+  );
 }
 
 console.log("Testing Sweeping...");
@@ -161,6 +177,17 @@ assert(expiredIds2.includes(sweepRoom2.id), "sweeps completed room after 48h");
 assert(getRoom(sweepRoom3.id) !== undefined, "active room persists");
 
 console.log("Testing Game Starting & In-Progress Guards...");
+const soloGameRoom = createRoom("Solo Game", "solo_owner", "SoloHost", "player");
+try {
+  startGame(soloGameRoom.id, "solo_owner");
+  assert(false, "should reject a game with fewer than two active players");
+} catch (e) {
+  assert(
+    e instanceof RoomError && e.code === "NOT_ENOUGH_PLAYERS",
+    "requires at least two active players",
+  );
+}
+
 const gameRoom = createRoom("Game Start Room", "owner_1", "HostAlice", "player");
 joinRoom(gameRoom.id, "player_2", "GuestBob", "player");
 joinRoom(gameRoom.id, "spec_1", "SpectatorCat", "spectator");
@@ -174,8 +201,24 @@ try {
   startGame(gameRoom.id, "owner_1");
   assert(false, "should reject starting game when round is already in WORD_SELECTION or ACTIVE");
 } catch (e) {
-  assert(e instanceof RoomError && e.code === "GAME_IN_PROGRESS", "enforces GAME_IN_PROGRESS guard");
+  assert(
+    e instanceof RoomError && e.code === "GAME_IN_PROGRESS",
+    "enforces GAME_IN_PROGRESS guard",
+  );
 }
+
+console.log("Testing Completed Match Reset...");
+gameRoom.players.get("owner_1")!.score = 500;
+gameRoom.players.get("player_2")!.score = 250;
+gameRoom.game.status = "COMPLETED";
+markRoomCompleted(gameRoom.id, baseTime);
+startGame(gameRoom.id, "owner_1");
+assert(
+  [...gameRoom.players.values()].every((player) => player.score === 0),
+  "resets scores for Play Again",
+);
+assert(gameRoom.completedAt === null, "clears completed timestamp for Play Again");
+assert(gameRoom.game.roundNumber === 1, "restarts round numbering for Play Again");
 
 console.log(failed ? `\nRESULT: FAIL (${failed} errors)` : "\nRESULT: ALL ROOM TESTS PASSED");
 process.exit(failed ? 1 : 0);
