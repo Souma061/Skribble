@@ -1,11 +1,14 @@
 //generate mask blanks with revealed letters
 export function generateMaskedWord(word, revealedIndices) {
-    return word.split("").map((char, index) => {
+    return word
+        .split("")
+        .map((char, index) => {
         if (char === " " || char === "_") {
             return char;
         }
         return revealedIndices.has(index) ? char.toUpperCase() : "_";
-    }).join(" ");
+    })
+        .join(" ");
 }
 // "SUNFLOOWER" with revealed indices [0,2] => "S _ N _ _ _ _ _ _ "
 //picks a new random unrevealed letter index from the word
@@ -20,6 +23,32 @@ export function getNextRevealIndex(word, revealedIndices) {
         return null;
     const randomIndex = Math.floor(Math.random() * eligibleIndex.length);
     return eligibleIndex[randomIndex] ?? null;
+}
+export function normalizeWord(value) {
+    return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+export function isExactWordMatch(value, secret) {
+    return normalizeWord(value) === normalizeWord(secret);
+}
+export function doesMessageRevealWord(message, secret) {
+    const normalizedMessage = normalizeWord(message);
+    const normalizedSecret = normalizeWord(secret);
+    if (!normalizedSecret)
+        return false;
+    const escapedSecret = normalizedSecret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|\\W)${escapedSecret}(?=$|\\W)`, "i").test(normalizedMessage);
+}
+export function findAllowedWord(suggestions, selectedWord) {
+    const normalizedSelection = normalizeWord(selectedWord);
+    return suggestions.find((word) => normalizeWord(word) === normalizedSelection);
+}
+export function validateCustomWord(value) {
+    const normalized = value.trim().replace(/\s+/g, " ");
+    if (normalized.length < 2 || normalized.length > 40)
+        return undefined;
+    if (!/^[\p{L}\p{N}][\p{L}\p{N} '&-]*$/u.test(normalized))
+        return undefined;
+    return normalized;
 }
 //Levenshtein distance for close-guess
 export function getLevenshteinDistance(a, b) {

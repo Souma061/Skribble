@@ -38,11 +38,14 @@ function App() {
     });
 
     // Room Event Listeners
-    socket.on("room:created", (payload: { roomId: string; room: RoomState }) => {
-      setRoom(payload.room);
-      setLoading(false);
-      setErrorMessage(null);
-    });
+    socket.on(
+      "room:created",
+      (payload: { roomId: string; room: RoomState }) => {
+        setRoom(payload.room);
+        setLoading(false);
+        setErrorMessage(null);
+      },
+    );
 
     socket.on("room:joined", (payload: { roomId: string; room: RoomState }) => {
       setRoom(payload.room);
@@ -75,13 +78,21 @@ function App() {
     };
   }, []);
 
-  const handleCreateRoom = (username: string, roomName: string, role: PlayerRole) => {
+  const handleCreateRoom = (
+    username: string,
+    roomName: string,
+    role: PlayerRole,
+  ) => {
     if (!socketRef.current) return;
     setLoading(true);
     socketRef.current.emit("room:create", { username, roomName, role });
   };
 
-  const handleJoinRoom = (username: string, roomId: string, role: PlayerRole) => {
+  const handleJoinRoom = (
+    username: string,
+    roomId: string,
+    role: PlayerRole,
+  ) => {
     if (!socketRef.current) return;
     setLoading(true);
     socketRef.current.emit("room:join", { username, roomId, role });
@@ -90,7 +101,8 @@ function App() {
   const handleLeaveRoom = () => {
     if (!socketRef.current) return;
     socketRef.current.emit("room:leave");
-    setRoom(null);
+    // Do NOT optimistically clear room here — wait for server's room:left event
+    // to avoid stuck screen if the leave fails server-side.
   };
 
   const handleDeleteRoom = () => {
@@ -129,7 +141,8 @@ function App() {
       </main>
 
       <footer className="py-4 text-center text-xs font-bold text-[#9CA3AF]">
-        Skribble Party &bull; Soft Pastel Multiplayer Drawing & Guessing Experience
+        Skribble Party &bull; Soft Pastel Multiplayer Drawing & Guessing
+        Experience
       </footer>
     </div>
   );

@@ -1,17 +1,41 @@
-import { Pencil, Sparkles } from "lucide-react";
-import React, { useState } from "react";
+import { Pencil, Sparkles, Timer } from "lucide-react";
+import React, { useEffect, useState } from "react";
 
 interface WordModalProps {
   isOpen: boolean;
   suggestions: string[];
+  timeLimitSeconds: number;
   onSubmitWord: (word: string, hint?: string) => void;
 }
 
-export const WordModal: React.FC<WordModalProps> = ({ isOpen, suggestions, onSubmitWord }) => {
+const WordModalDialog: React.FC<Omit<WordModalProps, "isOpen">> = ({
+  suggestions,
+  timeLimitSeconds,
+  onSubmitWord,
+}) => {
   const [customWord, setCustomWord] = useState("");
   const [customHint, setCustomHint] = useState("");
+  const [countdown, setCountdown] = useState(timeLimitSeconds);
 
-  if (!isOpen) return null;
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const urgentColor =
+    countdown <= 5
+      ? "bg-[#FEE2E2] text-[#DC2626] border-[#FCA5A5]"
+      : countdown <= 10
+        ? "bg-[#FEF3C7] text-[#B45309] border-[#FDE68A]"
+        : "bg-[#EDE9FE] text-[#7C3AED] border-[#DDD6FE]";
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -23,12 +47,24 @@ export const WordModal: React.FC<WordModalProps> = ({ isOpen, suggestions, onSub
     <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
       <div className="bg-white rounded-3xl p-6 md:p-8 max-w-md w-full border-2 border-[#E9E4F7] pastel-card space-y-6 shadow-2xl">
         <div className="text-center space-y-2">
-          <div className="w-12 h-12 rounded-2xl bg-[#EDE9FE] text-[#7C3AED] mx-auto flex items-center justify-center shadow-xs">
-            <Pencil className="w-6 h-6" />
+          <div className="flex items-center justify-center gap-3">
+            <div className="w-12 h-12 rounded-2xl bg-[#EDE9FE] text-[#7C3AED] flex items-center justify-center shadow-xs">
+              <Pencil className="w-6 h-6" />
+            </div>
+            {/* Countdown badge */}
+            <div
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-2xl border-2 font-black text-lg min-w-[56px] justify-center transition-colors ${urgentColor}`}
+            >
+              <Timer className="w-4 h-4" />
+              {countdown}s
+            </div>
           </div>
-          <h2 className="text-2xl font-extrabold text-[#2E1065]">Choose Your Word!</h2>
+          <h2 className="text-2xl font-extrabold text-[#2E1065]">
+            Choose Your Word!
+          </h2>
           <p className="text-xs font-semibold text-[#6B7280]">
-            Pick a quick suggestion or enter your own custom topic before time runs out.
+            Pick a quick suggestion or enter your own custom topic before time
+            runs out.
           </p>
         </div>
 
@@ -55,9 +91,14 @@ export const WordModal: React.FC<WordModalProps> = ({ isOpen, suggestions, onSub
         )}
 
         {/* Custom Topic */}
-        <form onSubmit={handleSubmit} className="space-y-4 pt-2 border-t border-[#F3F4F6]">
+        <form
+          onSubmit={handleSubmit}
+          className="space-y-4 pt-2 border-t border-[#F3F4F6]"
+        >
           <div className="space-y-1.5">
-            <label className="text-xs font-bold text-[#374151]">Custom Topic</label>
+            <label className="text-xs font-bold text-[#374151]">
+              Custom Topic
+            </label>
             <input
               type="text"
               required
@@ -71,7 +112,9 @@ export const WordModal: React.FC<WordModalProps> = ({ isOpen, suggestions, onSub
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-bold text-[#374151]">Optional Hint</label>
+            <label className="text-xs font-bold text-[#374151]">
+              Optional Hint
+            </label>
             <input
               type="text"
               maxLength={80}
@@ -92,5 +135,23 @@ export const WordModal: React.FC<WordModalProps> = ({ isOpen, suggestions, onSub
         </form>
       </div>
     </div>
+  );
+};
+
+export const WordModal: React.FC<WordModalProps> = ({
+  isOpen,
+  suggestions,
+  timeLimitSeconds,
+  onSubmitWord,
+}) => {
+  if (!isOpen) return null;
+
+  return (
+    <WordModalDialog
+      key={suggestions.join(",")}
+      suggestions={suggestions}
+      timeLimitSeconds={timeLimitSeconds}
+      onSubmitWord={onSubmitWord}
+    />
   );
 };

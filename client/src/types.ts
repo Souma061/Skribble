@@ -8,7 +8,8 @@ export interface Player {
   joinedAt: number;
 }
 
-export type GameStatus = "WAITING" | "WORD_SELECTION" | "ACTIVE_ROUND" | "ROUND_ENDING" | "COMPLETED";
+export type GameStatus =
+  "WAITING" | "WORD_SELECTION" | "ACTIVE_ROUND" | "ROUND_ENDING" | "COMPLETED";
 
 export interface GameState {
   status: GameStatus;
@@ -30,6 +31,9 @@ export interface RoomState {
   isAbandoned: boolean;
   isCompleted: boolean;
   timeLeft?: number;
+  roundEndsAt?: number;
+  roundDurationSec?: number;
+  serverNow?: number;
   correctGuesserCount?: number;
   maxRounds?: number;
 }
@@ -64,5 +68,5 @@ export interface ChatMessage {
   id: string;
   username: string;
   message: string;
-  type: "CHAT" | "CORRECT_GUESS" | "SYSTEM";
+  type: "CHAT" | "CORRECT_GUESS" | "CLOSE_GUESS" | "SYSTEM";
 }

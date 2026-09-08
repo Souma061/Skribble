@@ -1,4 +1,5 @@
 import { EngineError, GameEngine } from "./GameEngine.js";
+import { calculateRemainingSeconds, crossedTimeThreshold } from "./timerUtils.js";
 import {
   doesMessageRevealWord,
   findAllowedWord,
@@ -74,6 +75,16 @@ assert(
   !doesMessageRevealWord("A caterpillar", "cat"),
   "does not match secret fragments inside words",
 );
+
+const deadline = 1_000_000;
+assert(
+  calculateRemainingSeconds(deadline, deadline - 120_000) === 120,
+  "calculates full round time",
+);
+assert(calculateRemainingSeconds(deadline, deadline - 59_001) === 60, "rounds remaining time up");
+assert(calculateRemainingSeconds(deadline, deadline + 1) === 0, "never returns negative time");
+assert(crossedTimeThreshold(61, 59, 60), "detects a skipped reveal threshold");
+assert(!crossedTimeThreshold(60, 59, 60), "reveals each threshold only once");
 
 console.log(failed ? `RESULT: FAIL (${failed})` : "RESULT: PASS");
 process.exit(failed ? 1 : 0);

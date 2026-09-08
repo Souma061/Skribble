@@ -2,9 +2,11 @@ import type { GameState } from "./types.js";
 export declare function initialGameState(): GameState;
 export declare class GameEngine {
     private state;
+    private drawerQueue;
     constructor(game?: GameState);
     getState(): GameState;
     selectDrawer(playerIds: string[], random?: () => number): string;
+    removeQueuedPlayer(playerId: string): boolean;
 }
 export declare class EngineError extends Error {
     code: string;

@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { getRoom } from "./rooms.js";
 const globalForPrisma = globalThis;
 export const prisma = globalForPrisma.prisma ??
     new PrismaClient({
@@ -11,8 +12,10 @@ if (process.env.NODE_ENV !== "production")
  */
 export async function dbCreateRoom(id, name, ownerId) {
     try {
-        return await prisma.room.create({
-            data: {
+        return await prisma.room.upsert({
+            where: { id },
+            update: { name, ownerId },
+            create: {
                 id,
                 name,
                 ownerId,
@@ -30,6 +33,20 @@ export async function dbCreateRoom(id, name, ownerId) {
  */
 export async function dbAddPlayer(roomId, id, username, role) {
     try {
+        // Ensure parent Room exists to satisfy PostgreSQL foreign key constraint (Player_roomId_fkey)
+        const inMemoryRoom = getRoom(roomId);
+        if (inMemoryRoom) {
+            await prisma.room.upsert({
+                where: { id: roomId },
+                update: {},
+                create: {
+                    id: roomId,
+                    name: inMemoryRoom.name,
+                    ownerId: inMemoryRoom.ownerId,
+                    status: "WAITING",
+                },
+            });
+        }
         return await prisma.player.upsert({
             where: {
                 roomId_username: {
@@ -94,6 +111,54 @@ export async function dbGetRoundStrokes(roundId) {
     catch (err) {
         console.error("[DB] Failed to fetch round strokes:", err);
         return [];
+    }
+}
+/**
+ * Fetch N random words from the Word bank table
+ */
+export async function dbGetRandomWords(count = 7) {
+    try {
+        const words = await prisma.$queryRaw `
+      SELECT word FROM "Word" ORDER BY RANDOM() LIMIT ${count}
+    `;
+        return words.map((w) => w.word);
+    }
+    catch (err) {
+        console.error("[DB] Failed to fetch random words:", err);
+        return [];
+    }
+}
+// key = `${socketId}:${event}`
+const buckets = new Map();
+/**
+ * Returns true if the event is allowed, false if it should be dropped.
+ *
+ * @param socketId  - unique socket identifier
+ * @param event     - event name (e.g. "chat:send")
+ * @param limit     - max calls allowed per window
+ * @param windowMs  - rolling window size in milliseconds
+ */
+export function rateLimit(socketId, event, limit, windowMs) {
+    const key = `${socketId}:${event}`;
+    const now = Date.now();
+    const bucket = buckets.get(key);
+    if (!bucket || now - bucket.windowStart >= windowMs) {
+        // New window
+        buckets.set(key, { count: 1, windowStart: now });
+        return true;
+    }
+    if (bucket.count >= limit)
+        return false;
+    bucket.count += 1;
+    return true;
+}
+/**
+ * Remove all rate-limit buckets for a socket (call on disconnect).
+ */
+export function socketCleanup(socketId) {
+    for (const key of buckets.keys()) {
+        if (key.startsWith(`${socketId}:`))
+            buckets.delete(key);
     }
 }
 //# sourceMappingURL=db.js.map

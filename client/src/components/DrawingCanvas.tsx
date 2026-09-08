@@ -397,6 +397,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerLeave={handlePointerUp}
+          onPointerCancel={handlePointerUp}
           className={`w-full h-full block ${
             isDrawer && !disabled ? "cursor-crosshair" : "cursor-default pointer-events-none"
           }`}

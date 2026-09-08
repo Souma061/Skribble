@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { GameEngine } from "./game/GameEngine.js";
+import { calculateRemainingSeconds } from "./game/timerUtils.js";
 import type { GameState } from "./game/types.js";
 
 export const MAX_ACTIVE_PLAYERS = 15;
@@ -33,7 +34,9 @@ export interface Room {
   currentWord?: string;
   currentHint?: string;
   revealedIndices: Set<number>;
-  timeLeft: number;
+  roundDurationSec: number;
+  roundEndsAt?: number;
+  lastTimerBroadcastSecond?: number;
   timerInterval?: NodeJS.Timeout;
   wordSelectionTimeout?: NodeJS.Timeout;
   wordSuggestions: string[];
@@ -52,7 +55,7 @@ export function validateUsername(raw: string): string {
   if (!USERNAME_RE.test(name)) {
     throw new RoomError(
       "INVALID_USERNAME",
-      "Username must be 3–20 chars: letters, numbers, spaces, underscores",
+      "Username must be 3-20 chars: letters, numbers, spaces, underscores",
     );
   }
   return name;
@@ -129,7 +132,7 @@ export function createRoom(
     game: engine.getState(),
     engine,
     revealedIndices: new Set(),
-    timeLeft: 0,
+    roundDurationSec: 0,
     wordSuggestions: [],
     correctGuesserIds: [],
     maxRounds: 0,
@@ -145,8 +148,12 @@ export function startGame(roomId: string, socketId: string): { room: Room; drawe
     throw new RoomError("FORBIDDEN", "Only the room owner can start the game");
   }
 
-  // Guard: cannot start a new round while one is already running
-  if (room.game.status === "ACTIVE_ROUND" || room.game.status === "WORD_SELECTION") {
+  // Guard: cannot start a new round while one is already running or ending
+  if (
+    room.game.status === "ACTIVE_ROUND" ||
+    room.game.status === "WORD_SELECTION" ||
+    room.game.status === "ROUND_ENDING"
+  ) {
     throw new RoomError("GAME_IN_PROGRESS", "A round is already in progress");
   }
 
@@ -182,7 +189,9 @@ export function startGame(roomId: string, socketId: string): { room: Room; drawe
   room.game.status = "WORD_SELECTION";
   delete room.currentWord;
   delete room.currentHint;
-  room.timeLeft = 0;
+  delete room.roundEndsAt;
+  delete room.lastTimerBroadcastSecond;
+  room.roundDurationSec = 0;
   room.wordSuggestions = [];
   room.correctGuesserIds = [];
   room.revealedIndices.clear();
@@ -277,6 +286,8 @@ export function leaveRoom(roomId: string, socketId: string, now = Date.now()): R
       clearInterval(room.timerInterval);
       delete room.timerInterval;
     }
+    delete room.roundEndsAt;
+    delete room.lastTimerBroadcastSecond;
     if (room.wordSelectionTimeout) {
       clearTimeout(room.wordSelectionTimeout);
       delete room.wordSelectionTimeout;
@@ -336,7 +347,12 @@ export function sweepExpired(now = Date.now()): string[] {
   return expired;
 }
 
+export function getTimeLeft(room: Room, now = Date.now()): number {
+  return room.roundEndsAt === undefined ? 0 : calculateRemainingSeconds(room.roundEndsAt, now);
+}
+
 export function serializeRoom(room: Room) {
+  const serverNow = Date.now();
   return {
     id: room.id,
     name: room.name,
@@ -350,7 +366,10 @@ export function serializeRoom(room: Room) {
     createdAt: room.createdAt,
     isAbandoned: room.abandonedAt !== null,
     isCompleted: room.completedAt !== null,
-    timeLeft: room.timeLeft,
+    timeLeft: getTimeLeft(room, serverNow),
+    roundDurationSec: room.roundDurationSec,
+    serverNow,
+    ...(room.roundEndsAt !== undefined ? { roundEndsAt: room.roundEndsAt } : {}),
     correctGuesserCount: room.correctGuesserIds.length,
     maxRounds: room.maxRounds,
   };

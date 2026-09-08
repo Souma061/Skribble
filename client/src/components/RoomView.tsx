@@ -1,5 +1,14 @@
-import { Check, Copy, Crown, Eye, LogOut, Palette, Play, Trash2 } from "lucide-react";
-import React, { useEffect, useState } from "react";
+import {
+  Check,
+  Copy,
+  Crown,
+  Eye,
+  LogOut,
+  Palette,
+  Play,
+  Trash2,
+} from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
 import { Socket } from "socket.io-client";
 import type { ChatMessage, RoomState } from "../types";
 import { ChatBox } from "./ChatBox";
@@ -8,6 +17,12 @@ import { GameOverModal } from "./GameOverModal";
 import { RoundEndModal } from "./RoundEndModal";
 import { WordBanner } from "./WordBanner";
 import { WordModal } from "./WordModal";
+
+interface RoundTimerSync {
+  timeLeft: number;
+  roundEndsAt: number;
+  serverNow: number;
+}
 
 interface RoomViewProps {
   socket: Socket | null;
@@ -43,14 +58,23 @@ export const RoomView: React.FC<RoomViewProps> = ({
   // Word Selection State
   const [isWordModalOpen, setIsWordModalOpen] = useState(false);
   const [wordSuggestions, setWordSuggestions] = useState<string[]>([]);
+  const [wordSelectionTimeLimit, setWordSelectionTimeLimit] =
+    useState<number>(20);
   const [assignedWord, setAssignedWord] = useState<string | undefined>();
   const [maskedBlanks, setMaskedBlanks] = useState<string>("");
   const [letterCount, setLetterCount] = useState<number | undefined>();
   const [currentHint, setCurrentHint] = useState<string | undefined>();
-  const [timeLeft, setTimeLeft] = useState<number>(120);
+  const [roundEndsAt, setRoundEndsAt] = useState<number | null>(
+    room.roundEndsAt ?? null,
+  );
+  const [timeLeft, setTimeLeft] = useState<number>(room.timeLeft ?? 120);
+  const serverClockOffsetRef = useRef(0);
 
   // Round End / Game Over Modals State
-  const [roundEndData, setRoundEndData] = useState<{ word: string; reason: string } | null>(null);
+  const [roundEndData, setRoundEndData] = useState<{
+    word: string;
+    reason: string;
+  } | null>(null);
 
   // Chat & Guess State
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -67,43 +91,79 @@ export const RoomView: React.FC<RoomViewProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  useEffect(() => {
+    if (room.serverNow !== undefined) {
+      serverClockOffsetRef.current = room.serverNow - Date.now();
+    }
+  }, [room.serverNow]);
+
+  useEffect(() => {
+    if (room.game.status !== "ACTIVE_ROUND" || roundEndsAt === null) return;
+
+    const timer = window.setInterval(() => {
+      const serverAdjustedNow = Date.now() + serverClockOffsetRef.current;
+      const nextTimeLeft = Math.max(
+        0,
+        Math.ceil((roundEndsAt - serverAdjustedNow) / 1000),
+      );
+      setTimeLeft((current) =>
+        current === nextTimeLeft ? current : nextTimeLeft,
+      );
+    }, 250);
+
+    return () => window.clearInterval(timer);
+  }, [room.game.status, roundEndsAt]);
+
   // Socket listeners for game flow
   useEffect(() => {
     if (!socket) return;
 
     // 1. Drawer Prompt
-    const handlePromptWord = (payload: { suggestions: string[] }) => {
+    const handlePromptWord = (payload: {
+      suggestions: string[];
+      timeLimitSeconds?: number;
+    }) => {
       setWordSuggestions(payload.suggestions);
+      setWordSelectionTimeLimit(payload.timeLimitSeconds ?? 20);
       setIsWordModalOpen(true);
       setRoundEndData(null);
     };
 
+    const syncRoundTimer = (payload: RoundTimerSync) => {
+      serverClockOffsetRef.current = payload.serverNow - Date.now();
+      setRoundEndsAt(payload.roundEndsAt);
+      setTimeLeft(payload.timeLeft);
+    };
+
     // 2. Assigned Word for Drawer
-    const handleWordAssigned = (payload: { word: string; hint?: string; timeLeft: number }) => {
+    const handleWordAssigned = (
+      payload: { word: string; hint?: string } & RoundTimerSync,
+    ) => {
       setAssignedWord(payload.word);
       setCurrentHint(payload.hint);
-      setTimeLeft(payload.timeLeft);
+      syncRoundTimer(payload);
       setIsWordModalOpen(false);
       setRoundEndData(null);
     };
 
     // 3. Masked Word for Guessers
-    const handleWordMasked = (payload: {
-      blanks: string;
-      letterCount: number;
-      hint?: string;
-      timeLeft: number;
-    }) => {
+    const handleWordMasked = (
+      payload: {
+        blanks: string;
+        letterCount: number;
+        hint?: string;
+      } & RoundTimerSync,
+    ) => {
       setMaskedBlanks(payload.blanks);
       setLetterCount(payload.letterCount);
       setCurrentHint(payload.hint);
-      setTimeLeft(payload.timeLeft);
+      syncRoundTimer(payload);
       setRoundEndData(null);
     };
 
     // 4. Timer Tick
-    const handleTimerTick = (payload: { timeLeft: number }) => {
-      setTimeLeft(payload.timeLeft);
+    const handleTimerTick = (payload: RoundTimerSync) => {
+      syncRoundTimer(payload);
     };
 
     // 5. Letter Reveal
@@ -113,12 +173,14 @@ export const RoomView: React.FC<RoomViewProps> = ({
 
     // 6. Round Ended
     const handleRoundEnded = (payload: { word: string; reason: string }) => {
+      setRoundEndsAt(null);
+      setTimeLeft(0);
       setRoundEndData(payload);
     };
 
-    // 7. Chat messages
+    // 7. Chat messages — capped at 200 to prevent unbounded state growth
     const handleChatMessage = (msg: ChatMessage) => {
-      setMessages((prev) => [...prev, msg]);
+      setMessages((prev) => [...prev.slice(-199), msg]);
     };
 
     // 8. Close Guess
@@ -168,6 +230,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
       <WordModal
         isOpen={isWordModalOpen && isDrawer}
         suggestions={wordSuggestions}
+        timeLimitSeconds={wordSelectionTimeLimit}
         onSubmitWord={handleSubmitWord}
       />
 
@@ -194,7 +257,9 @@ export const RoomView: React.FC<RoomViewProps> = ({
       <div className="w-full bg-white rounded-3xl p-6 border border-[#E9E4F7] pastel-card flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="text-2xl md:text-3xl font-extrabold text-[#2E1065]">{room.name}</h2>
+            <h2 className="text-2xl md:text-3xl font-extrabold text-[#2E1065]">
+              {room.name}
+            </h2>
             <span
               className={`px-3.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
                 room.game.status === "ACTIVE_ROUND"
@@ -220,7 +285,11 @@ export const RoomView: React.FC<RoomViewProps> = ({
           onClick={handleCopyCode}
           className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-[#F3E8FF] hover:bg-[#E9D5FF] text-[#6B21A8] text-xs font-extrabold btn-squishy cursor-pointer transition-colors"
         >
-          {copied ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
+          {copied ? (
+            <Check className="w-4 h-4 text-green-600" />
+          ) : (
+            <Copy className="w-4 h-4" />
+          )}
           <span>{copied ? "Copied!" : `Code: ${room.id.slice(0, 8)}`}</span>
         </button>
       </div>
@@ -250,8 +319,9 @@ export const RoomView: React.FC<RoomViewProps> = ({
                 : room.game.status === "WAITING" && isOwner
             }
             drawerName={
-              room.players.find((p) => p.id === (room.game.currentDrawerId || room.ownerId))
-                ?.username || "Host"
+              room.players.find(
+                (p) => p.id === (room.game.currentDrawerId || room.ownerId),
+              )?.username || "Host"
             }
           />
         </div>
@@ -301,7 +371,9 @@ export const RoomView: React.FC<RoomViewProps> = ({
                     </div>
                   </div>
 
-                  {isThisPlayerOwner && <Crown className="w-4 h-4 text-[#F59E0B] shrink-0" />}
+                  {isThisPlayerOwner && (
+                    <Crown className="w-4 h-4 text-[#F59E0B] shrink-0" />
+                  )}
                 </div>
               );
             })}

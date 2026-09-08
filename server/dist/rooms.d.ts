@@ -27,15 +27,22 @@ export interface Room {
     currentWord?: string;
     currentHint?: string;
     revealedIndices: Set<number>;
-    timeLeft: number;
+    roundDurationSec: number;
+    roundEndsAt?: number;
+    lastTimerBroadcastSecond?: number;
     timerInterval?: NodeJS.Timeout;
+    wordSelectionTimeout?: NodeJS.Timeout;
+    wordSuggestions: string[];
     correctGuesserIds: string[];
+    maxRounds: number;
 }
 export declare function normalizeUsername(raw: string): string;
 export declare function validateUsername(raw: string): string;
 export declare function isUsernameTaken(room: Room | undefined, username: string, exceptSocketId?: string): boolean;
 export declare function getActivePlayerCount(room: Room): number;
 export declare function getSpectatorCount(room: Room): number;
+export declare function getRoomCount(): number;
+export declare function getTotalPlayerCount(): number;
 export declare function createRoom(name: string, socketId: string, username: string, role?: PlayerRole): Room;
 export declare function startGame(roomId: string, socketId: string): {
     room: Room;
@@ -48,6 +55,7 @@ export declare function deleteRoom(roomId: string): boolean;
 export declare function getRoom(roomId: string | undefined): Room | undefined;
 export declare function markRoomCompleted(roomId: string, now?: number): Room;
 export declare function sweepExpired(now?: number): string[];
+export declare function getTimeLeft(room: Room, now?: number): number;
 export declare function serializeRoom(room: Room): {
     id: string;
     name: string;
@@ -62,7 +70,11 @@ export declare function serializeRoom(room: Room): {
     isAbandoned: boolean;
     isCompleted: boolean;
     timeLeft: number;
+    roundDurationSec: number;
+    serverNow: number;
+    roundEndsAt?: number;
     correctGuesserCount: number;
+    maxRounds: number;
 };
 export declare class RoomError extends Error {
     code: string;

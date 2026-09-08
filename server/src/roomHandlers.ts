@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Server, Socket } from "socket.io";
 import { dbAddPlayer, dbCreateRoom, dbGetRandomWords, rateLimit, socketCleanup } from "./db.js";
 import { clearRoomStrokes, registerDrawHandlers } from "./drawHandlers.js";
+import { calculateRemainingSeconds, crossedTimeThreshold } from "./game/timerUtils.js";
 import {
   doesMessageRevealWord,
   findAllowedWord,
@@ -18,6 +19,7 @@ import {
   createRoom,
   deleteRoom,
   getRoom,
+  getTimeLeft,
   isUsernameTaken,
   joinRoom,
   leaveRoom,
@@ -122,9 +124,9 @@ function handleCreate(socket: Socket) {
       socket.emit("room:created", { roomId: room.id, room: serializeRoom(room) });
 
       // Async DB Persistence: sequence room creation before adding initial player
-      dbCreateRoom(room.id, room.name, room.ownerId).then(() => {
-        dbAddPlayer(room.id, socket.id, username, role);
-      });
+      dbCreateRoom(room.id, room.name, room.ownerId)
+        .then(() => dbAddPlayer(room.id, socket.id, username, role))
+        .catch((err) => console.error("[DB] Failed to persist room creation:", err));
     } catch (err) {
       emitError(socket, err);
     }
@@ -305,22 +307,32 @@ function beginRound(io: Server, roomId: string, drawerId: string, word: string, 
   room.revealedIndices.clear();
   room.correctGuesserIds = [];
 
+  startRoundTimer(io, room.id);
+  const serverNow = Date.now();
+  const timerSync = {
+    timeLeft: getTimeLeft(room, serverNow),
+    roundEndsAt: room.roundEndsAt,
+    roundDurationSec: room.roundDurationSec,
+    serverNow,
+  };
+
   io.to(drawerId).emit("round:word-assigned", {
     word,
     hint,
-    timeLeft: ROUND_DURATION_S,
+    ...timerSync,
   });
 
   const blanks = generateMaskedWord(word, room.revealedIndices);
-  io.to(room.id).except(drawerId).emit("round:word-masked", {
-    blanks,
-    letterCount: word.length,
-    hint,
-    timeLeft: ROUND_DURATION_S,
-  });
+  io.to(room.id)
+    .except(drawerId)
+    .emit("round:word-masked", {
+      blanks,
+      letterCount: word.length,
+      hint,
+      ...timerSync,
+    });
 
   io.to(room.id).emit("room:state", serializeRoom(room));
-  startRoundTimer(io, room.id);
 }
 
 function startRoundTimer(io: Server, roomId: string) {
@@ -328,41 +340,53 @@ function startRoundTimer(io: Server, roomId: string) {
   if (!room) return;
 
   if (room.timerInterval) clearInterval(room.timerInterval);
-  room.timeLeft = ROUND_DURATION_S;
 
-  room.timerInterval = setInterval(() => {
-    room.timeLeft -= 1;
+  const roundEndsAt = Date.now() + ROUND_DURATION_S * 1000;
+  room.roundDurationSec = ROUND_DURATION_S;
+  room.roundEndsAt = roundEndsAt;
+  room.lastTimerBroadcastSecond = ROUND_DURATION_S;
 
-    // Broadcast 1s tick
-    io.to(roomId).emit("timer:tick", { timeLeft: room.timeLeft });
-
-    // 1st Letter Reveal at 60s (50% of 120s)
-    if (room.timeLeft === 60 && room.currentWord) {
-      const idx = getNextRevealIndex(room.currentWord, room.revealedIndices);
-      if (idx !== null) {
-        room.revealedIndices.add(idx);
-        const blanks = generateMaskedWord(room.currentWord, room.revealedIndices);
-        io.to(roomId).emit("round:hint-reveal", { blanks });
-      }
+  const timer = setInterval(() => {
+    if (room.game.status !== "ACTIVE_ROUND" || room.roundEndsAt !== roundEndsAt) {
+      clearInterval(timer);
+      if (room.timerInterval === timer) delete room.timerInterval;
+      return;
     }
 
-    // 2nd Letter Reveal at 30s (25% of 120s)
-    if (room.timeLeft === 30 && room.currentWord) {
-      const idx = getNextRevealIndex(room.currentWord, room.revealedIndices);
-      if (idx !== null) {
-        room.revealedIndices.add(idx);
-        const blanks = generateMaskedWord(room.currentWord, room.revealedIndices);
-        io.to(roomId).emit("round:hint-reveal", { blanks });
-      }
+    const previousTimeLeft = room.lastTimerBroadcastSecond ?? room.roundDurationSec;
+    const serverNow = Date.now();
+    const timeLeft = calculateRemainingSeconds(roundEndsAt, serverNow);
+    if (timeLeft === previousTimeLeft) return;
+
+    room.lastTimerBroadcastSecond = timeLeft;
+    io.to(roomId).emit("timer:tick", { timeLeft, roundEndsAt, serverNow });
+
+    if (timeLeft > 0 && crossedTimeThreshold(previousTimeLeft, timeLeft, 60)) {
+      revealNextHint(io, roomId);
+    }
+    if (timeLeft > 0 && crossedTimeThreshold(previousTimeLeft, timeLeft, 30)) {
+      revealNextHint(io, roomId);
     }
 
-    // Round Ends
-    if (room.timeLeft <= 0) {
-      clearInterval(room.timerInterval);
-      delete room.timerInterval;
+    if (timeLeft <= 0) {
       finishRound(io, roomId, "Time's up!");
     }
   }, 1000);
+
+  room.timerInterval = timer;
+  timer.unref();
+}
+
+function revealNextHint(io: Server, roomId: string) {
+  const room = getRoom(roomId);
+  if (!room?.currentWord) return;
+
+  const index = getNextRevealIndex(room.currentWord, room.revealedIndices);
+  if (index === null) return;
+
+  room.revealedIndices.add(index);
+  const blanks = generateMaskedWord(room.currentWord, room.revealedIndices);
+  io.to(roomId).emit("round:hint-reveal", { blanks });
 }
 
 function handleChatSend(io: Server, socket: Socket) {
@@ -378,7 +402,13 @@ function handleChatSend(io: Server, socket: Socket) {
     const player = room.players.get(socket.id);
     const username = player?.username || "Guest";
 
-    // If active round and sender is an active player (not drawer or spectator)
+    // Drawer cannot participate in guess validation — the word-reveal filter below
+    // already blocks them from leaking the secret; this comment makes the intent explicit.
+    // (The drawer's chat is not disabled server-side but is filtered client-side via
+    //  ChatBox disabled={isDrawer}. Any raw socket bypass still hits the reveal filter.)
+
+    // Players who already guessed correctly are excluded from further guess attempts.
+    // If active round and sender is an active player (not drawer or spectator, not already correct)
     if (
       room.game.status === "ACTIVE_ROUND" &&
       room.currentWord &&
@@ -389,7 +419,7 @@ function handleChatSend(io: Server, socket: Socket) {
       // 1. EXACT MATCH
       if (isExactWordMatch(rawMessage, room.currentWord)) {
         room.correctGuesserIds.push(socket.id);
-        const points = 100 + room.timeLeft * 2;
+        const points = 100 + getTimeLeft(room) * 2;
 
         addPlayerScore(room.id, socket.id, points);
 
@@ -457,6 +487,8 @@ function finishRound(io: Server, roomId: string, reason: string) {
     clearInterval(room.timerInterval);
     delete room.timerInterval;
   }
+  delete room.roundEndsAt;
+  delete room.lastTimerBroadcastSecond;
   if (room.wordSelectionTimeout) {
     clearTimeout(room.wordSelectionTimeout);
     delete room.wordSelectionTimeout;

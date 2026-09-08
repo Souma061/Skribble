@@ -1,4 +1,4 @@
-import { createRoom, joinRoom, leaveRoom, deleteRoom, getRoom, sweepExpired, validateUsername, isUsernameTaken, markRoomCompleted, MAX_ACTIVE_PLAYERS, MAX_SPECTATORS, MAX_CONNECTIONS, ABANDONED_MS, COMPLETED_MS, RoomError, } from "./rooms.js";
+import { ABANDONED_MS, COMPLETED_MS, createRoom, getRoom, isUsernameTaken, joinRoom, leaveRoom, markRoomCompleted, MAX_ACTIVE_PLAYERS, MAX_SPECTATORS, RoomError, startGame, sweepExpired, validateUsername, } from "./rooms.js";
 let failed = 0;
 function assert(cond, msg) {
     if (cond) {
@@ -127,6 +127,38 @@ assert(!expiredIds.includes(sweepRoom3.id), "does not sweep active room");
 const expiredIds2 = sweepExpired(baseTime + COMPLETED_MS + 1000);
 assert(expiredIds2.includes(sweepRoom2.id), "sweeps completed room after 48h");
 assert(getRoom(sweepRoom3.id) !== undefined, "active room persists");
+console.log("Testing Game Starting & In-Progress Guards...");
+const soloGameRoom = createRoom("Solo Game", "solo_owner", "SoloHost", "player");
+try {
+    startGame(soloGameRoom.id, "solo_owner");
+    assert(false, "should reject a game with fewer than two active players");
+}
+catch (e) {
+    assert(e instanceof RoomError && e.code === "NOT_ENOUGH_PLAYERS", "requires at least two active players");
+}
+const gameRoom = createRoom("Game Start Room", "owner_1", "HostAlice", "player");
+joinRoom(gameRoom.id, "player_2", "GuestBob", "player");
+joinRoom(gameRoom.id, "spec_1", "SpectatorCat", "spectator");
+const { drawerId } = startGame(gameRoom.id, "owner_1");
+assert(drawerId === "owner_1" || drawerId === "player_2", "selected an active player as drawer");
+assert(gameRoom.maxRounds === 2, "maxRounds set to active player count (2)");
+assert(gameRoom.game.status === "WORD_SELECTION", "game status transitions to WORD_SELECTION");
+try {
+    startGame(gameRoom.id, "owner_1");
+    assert(false, "should reject starting game when round is already in WORD_SELECTION or ACTIVE");
+}
+catch (e) {
+    assert(e instanceof RoomError && e.code === "GAME_IN_PROGRESS", "enforces GAME_IN_PROGRESS guard");
+}
+console.log("Testing Completed Match Reset...");
+gameRoom.players.get("owner_1").score = 500;
+gameRoom.players.get("player_2").score = 250;
+gameRoom.game.status = "COMPLETED";
+markRoomCompleted(gameRoom.id, baseTime);
+startGame(gameRoom.id, "owner_1");
+assert([...gameRoom.players.values()].every((player) => player.score === 0), "resets scores for Play Again");
+assert(gameRoom.completedAt === null, "clears completed timestamp for Play Again");
+assert(gameRoom.game.roundNumber === 1, "restarts round numbering for Play Again");
 console.log(failed ? `\nRESULT: FAIL (${failed} errors)` : "\nRESULT: ALL ROOM TESTS PASSED");
 process.exit(failed ? 1 : 0);
 //# sourceMappingURL=rooms.test.js.map

@@ -26,7 +26,7 @@ export class GameEngine {
   }
 
   getState(): GameState {
-    return this.state;
+    return { ...this.state };
   }
 
   selectDrawer(playerIds: string[], random: () => number = Math.random): string {

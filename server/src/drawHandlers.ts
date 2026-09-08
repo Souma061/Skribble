@@ -24,6 +24,12 @@ export interface Stroke {
 
 const roomDrawHistories = new Map<string, Stroke[]>();
 
+/** Maximum number of points buffered per stroke to prevent unbounded memory growth */
+const MAX_POINTS_PER_STROKE = 10_000;
+
+/** Only accept valid CSS hex colors: #RGB or #RRGGBB */
+const HEX_COLOR_RE = /^#[0-9A-Fa-f]{3,6}$/;
+
 export function getRoomStrokes(roomId: string): Stroke[] {
   return roomDrawHistories.get(roomId) || [];
 }
@@ -79,7 +85,10 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
 
       const strokeId = payload.strokeId.slice(0, 50);
       const seq = typeof payload.seq === "number" ? payload.seq : undefined;
-      const color = typeof payload.color === "string" ? payload.color.slice(0, 20) : "#2E1065";
+      const color =
+        typeof payload.color === "string" && HEX_COLOR_RE.test(payload.color)
+          ? payload.color
+          : "#2E1065";
       const size =
         typeof payload.size === "number" && payload.size >= 1 && payload.size <= 50
           ? payload.size
@@ -150,11 +159,13 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
       const strokes = roomDrawHistories.get(roomId);
       if (strokes && strokes.length > 0) {
         const lastStroke = strokes[strokes.length - 1];
-        if (lastStroke && lastStroke.seq === strokeSeq) {
-          lastStroke.points.push(...points);
+        if (lastStroke?.points.length === 0 && lastStroke.seq === strokeSeq) {
+          if (lastStroke.points.length + points.length <= MAX_POINTS_PER_STROKE)
+            lastStroke.points.push(...points);
         } else {
           const target = strokes.find((s) => s.seq === strokeSeq);
-          if (target) target.points.push(...points);
+          if (target && target.points.length + points.length <= MAX_POINTS_PER_STROKE)
+            target.points.push(...points);
         }
       }
 
@@ -187,10 +198,12 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
     if (strokes && strokes.length > 0) {
       const lastStroke = strokes[strokes.length - 1];
       if (lastStroke && lastStroke.id === strokeId) {
-        lastStroke.points.push(...safePoints);
+        if (lastStroke.points.length + safePoints.length <= MAX_POINTS_PER_STROKE)
+          lastStroke.points.push(...safePoints);
       } else {
         const currentStroke = strokes.find((s) => s.id === strokeId);
-        if (currentStroke) currentStroke.points.push(...safePoints);
+        if (currentStroke && currentStroke.points.length + safePoints.length <= MAX_POINTS_PER_STROKE)
+          currentStroke.points.push(...safePoints);
       }
     }
 

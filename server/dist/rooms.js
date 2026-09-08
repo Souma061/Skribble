@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { GameEngine } from "./game/GameEngine.js";
+import { calculateRemainingSeconds } from "./game/timerUtils.js";
 export const MAX_ACTIVE_PLAYERS = 15;
 export const MAX_SPECTATORS = 15;
 export const MAX_CONNECTIONS = 30;
@@ -13,7 +14,7 @@ export function normalizeUsername(raw) {
 export function validateUsername(raw) {
     const name = normalizeUsername(raw);
     if (!USERNAME_RE.test(name)) {
-        throw new RoomError("INVALID_USERNAME", "Username must be 3–20 chars: letters, numbers, spaces, underscores");
+        throw new RoomError("INVALID_USERNAME", "Username must be 3-20 chars: letters, numbers, spaces, underscores");
     }
     return name;
 }
@@ -36,6 +37,16 @@ export function getSpectatorCount(room) {
     for (const player of room.players.values()) {
         if (player.role === "spectator")
             count++;
+    }
+    return count;
+}
+export function getRoomCount() {
+    return rooms.size;
+}
+export function getTotalPlayerCount() {
+    let count = 0;
+    for (const room of rooms.values()) {
+        count += room.players.size;
     }
     return count;
 }
@@ -65,8 +76,10 @@ export function createRoom(name, socketId, username, role = "player") {
         game: engine.getState(),
         engine,
         revealedIndices: new Set(),
-        timeLeft: 0,
+        roundDurationSec: 0,
+        wordSuggestions: [],
         correctGuesserIds: [],
+        maxRounds: 0,
     };
     rooms.set(room.id, room);
     return room;
@@ -78,15 +91,43 @@ export function startGame(roomId, socketId) {
     if (room.ownerId !== socketId) {
         throw new RoomError("FORBIDDEN", "Only the room owner can start the game");
     }
+    // Guard: cannot start a new round while one is already running or ending
+    if (room.game.status === "ACTIVE_ROUND" ||
+        room.game.status === "WORD_SELECTION" ||
+        room.game.status === "ROUND_ENDING") {
+        throw new RoomError("GAME_IN_PROGRESS", "A round is already in progress");
+    }
     const eligiblePlayers = [...room.players.values()]
         .filter((p) => p.role === "player")
         .map((p) => p.id);
-    if (eligiblePlayers.length === 0) {
-        throw new RoomError("NO_ACTIVE_PLAYERS", "Need at least 1 active player to start the game");
+    if (eligiblePlayers.length < 2) {
+        throw new RoomError("NOT_ENOUGH_PLAYERS", "At least two active players are required");
+    }
+    // Fresh game: first start (WAITING) or Play Again after a completed match (COMPLETED)
+    if (room.game.status === "WAITING" || room.game.status === "COMPLETED") {
+        if (room.game.status === "COMPLETED") {
+            for (const player of room.players.values()) {
+                player.score = 0;
+            }
+            room.completedAt = null;
+        }
+        room.maxRounds = eligiblePlayers.length;
+        room.engine = new GameEngine();
+        room.game = room.engine.getState();
+    }
+    if (room.wordSelectionTimeout) {
+        clearTimeout(room.wordSelectionTimeout);
+        delete room.wordSelectionTimeout;
     }
     const drawerId = room.engine.selectDrawer(eligiblePlayers);
     room.game = room.engine.getState();
     room.game.status = "WORD_SELECTION";
+    delete room.currentWord;
+    delete room.currentHint;
+    delete room.roundEndsAt;
+    delete room.lastTimerBroadcastSecond;
+    room.roundDurationSec = 0;
+    room.wordSuggestions = [];
     room.correctGuesserIds = [];
     room.revealedIndices.clear();
     return { room, drawerId };
@@ -148,6 +189,9 @@ export function leaveRoom(roomId, socketId, now = Date.now()) {
     const room = rooms.get(roomId);
     if (!room)
         throw new RoomError("ROOM_NOT_FOUND", "Room not found");
+    if (room.engine.removeQueuedPlayer(socketId)) {
+        room.maxRounds = Math.max(room.game.roundNumber, room.maxRounds - 1);
+    }
     room.players.delete(socketId);
     // If room is now empty, mark as abandoned
     if (room.players.size === 0) {
@@ -155,6 +199,12 @@ export function leaveRoom(roomId, socketId, now = Date.now()) {
         if (room.timerInterval) {
             clearInterval(room.timerInterval);
             delete room.timerInterval;
+        }
+        delete room.roundEndsAt;
+        delete room.lastTimerBroadcastSecond;
+        if (room.wordSelectionTimeout) {
+            clearTimeout(room.wordSelectionTimeout);
+            delete room.wordSelectionTimeout;
         }
     }
     else if (room.ownerId === socketId) {
@@ -171,6 +221,9 @@ export function deleteRoom(roomId) {
     const room = rooms.get(roomId);
     if (room?.timerInterval) {
         clearInterval(room.timerInterval);
+    }
+    if (room?.wordSelectionTimeout) {
+        clearTimeout(room.wordSelectionTimeout);
     }
     return rooms.delete(roomId);
 }
@@ -196,13 +249,17 @@ export function sweepExpired(now = Date.now()) {
         // 2. Completed rooms for >= 48 hours (2 days)
         const isCompletedExpired = room.completedAt !== null && now - room.completedAt >= COMPLETED_MS;
         if (isAbandonedExpired || isCompletedExpired) {
-            rooms.delete(id);
+            deleteRoom(id);
             expired.push(id);
         }
     }
     return expired;
 }
+export function getTimeLeft(room, now = Date.now()) {
+    return room.roundEndsAt === undefined ? 0 : calculateRemainingSeconds(room.roundEndsAt, now);
+}
 export function serializeRoom(room) {
+    const serverNow = Date.now();
     return {
         id: room.id,
         name: room.name,
@@ -216,8 +273,12 @@ export function serializeRoom(room) {
         createdAt: room.createdAt,
         isAbandoned: room.abandonedAt !== null,
         isCompleted: room.completedAt !== null,
-        timeLeft: room.timeLeft,
+        timeLeft: getTimeLeft(room, serverNow),
+        roundDurationSec: room.roundDurationSec,
+        serverNow,
+        ...(room.roundEndsAt !== undefined ? { roundEndsAt: room.roundEndsAt } : {}),
         correctGuesserCount: room.correctGuesserIds.length,
+        maxRounds: room.maxRounds,
     };
 }
 export class RoomError extends Error {

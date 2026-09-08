@@ -52,4 +52,21 @@ export declare function dbGetRoundStrokes(roundId: string): Promise<{
     points: import("@prisma/client/runtime/library").JsonValue;
     createdAt: Date;
 }[]>;
+/**
+ * Fetch N random words from the Word bank table
+ */
+export declare function dbGetRandomWords(count?: number): Promise<string[]>;
+/**
+ * Returns true if the event is allowed, false if it should be dropped.
+ *
+ * @param socketId  - unique socket identifier
+ * @param event     - event name (e.g. "chat:send")
+ * @param limit     - max calls allowed per window
+ * @param windowMs  - rolling window size in milliseconds
+ */
+export declare function rateLimit(socketId: string, event: string, limit: number, windowMs: number): boolean;
+/**
+ * Remove all rate-limit buckets for a socket (call on disconnect).
+ */
+export declare function socketCleanup(socketId: string): void;
 //# sourceMappingURL=db.d.ts.map

@@ -13,6 +13,10 @@ import { registerSocketHandlers } from "./roomHandlers.js";
 
 dotenv.config();
 
+if (!process.env.METRICS_TOKEN) {
+  console.warn("[WARN] METRICS_TOKEN is not set — the /metrics endpoint will return 503");
+}
+
 const app = express();
 const httpServer = createServer(app);
 
