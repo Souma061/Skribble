@@ -28,6 +28,8 @@ interface RoomViewProps {
   socket: Socket | null;
   room: RoomState;
   currentSocketId: string | null;
+  currentPlayerToken: string | null;
+  connected: boolean;
   onLeaveRoom: () => void;
   onDeleteRoom: () => void;
   onStartGame?: () => void;
@@ -48,6 +50,8 @@ export const RoomView: React.FC<RoomViewProps> = ({
   socket,
   room,
   currentSocketId,
+  currentPlayerToken,
+  connected,
   onLeaveRoom,
   onDeleteRoom,
   onStartGame,
@@ -80,7 +84,8 @@ export const RoomView: React.FC<RoomViewProps> = ({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [closeGuessAlert, setCloseGuessAlert] = useState<string | null>(null);
 
-  const isOwner = room.ownerId === currentSocketId;
+  // ownerId is a playerToken; currentDrawerId is a socket id (remapped on revive).
+  const isOwner = !!currentPlayerToken && room.ownerId === currentPlayerToken;
   const isDrawer = room.game.currentDrawerId === currentSocketId;
   const activePlayers = room.players.filter((p) => p.role === "player");
   const spectators = room.players.filter((p) => p.role === "spectator");
@@ -183,6 +188,10 @@ export const RoomView: React.FC<RoomViewProps> = ({
       setMessages((prev) => [...prev.slice(-199), msg]);
     };
 
+    const handleChatHistory = (payload: { history: ChatMessage[] }) => {
+      setMessages(payload.history);
+    };
+
     // 8. Close Guess
     const handleCloseGuess = (payload: { message: string }) => {
       setCloseGuessAlert(payload.message);
@@ -196,6 +205,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
     socket.on("round:hint-reveal", handleHintReveal);
     socket.on("round:ended", handleRoundEnded);
     socket.on("chat:message", handleChatMessage);
+    socket.on("chat:history", handleChatHistory);
     socket.on("guess:close", handleCloseGuess);
 
     return () => {
@@ -206,6 +216,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
       socket.off("round:hint-reveal", handleHintReveal);
       socket.off("round:ended", handleRoundEnded);
       socket.off("chat:message", handleChatMessage);
+      socket.off("chat:history", handleChatHistory);
       socket.off("guess:close", handleCloseGuess);
     };
   }, [socket]);
@@ -219,13 +230,21 @@ export const RoomView: React.FC<RoomViewProps> = ({
     socket?.emit("chat:send", { message });
   };
 
-  const handleNextRoundFromModal = () => {
+  const handlePlayAgain = () => {
     setRoundEndData(null);
     onStartGame?.();
   };
 
   return (
     <div className="w-full max-w-6xl mx-auto px-4 py-6 flex flex-col gap-6">
+      {/* Reconnecting banner — shown during socket gap, hidden once live again */}
+      {!connected && (
+        <div className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-[#FEF3C7] border-2 border-[#FDE68A] text-[#92400E] text-sm font-bold animate-pulse">
+          <span className="inline-block w-2 h-2 rounded-full bg-[#F59E0B]" />
+          Reconnecting… your seat is held for 2 minutes
+        </div>
+      )}
+
       {/* Word Selection Popup for Drawer */}
       <WordModal
         isOpen={isWordModalOpen && isDrawer}
@@ -239,9 +258,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
         isOpen={roundEndData !== null && room.game.status !== "COMPLETED"}
         revealedWord={roundEndData?.word || ""}
         reason={roundEndData?.reason || "Round Finished"}
-        isOwner={isOwner}
         players={room.players}
-        onNextRound={handleNextRoundFromModal}
       />
 
       {/* Final Game Over Podium Modal */}
@@ -249,7 +266,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
         isOpen={room.game.status === "COMPLETED"}
         players={room.players}
         isOwner={isOwner}
-        onPlayAgain={handleNextRoundFromModal}
+        onPlayAgain={handlePlayAgain}
         onLeaveRoom={onLeaveRoom}
       />
 
@@ -290,7 +307,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
           ) : (
             <Copy className="w-4 h-4" />
           )}
-          <span>{copied ? "Copied!" : `Code: ${room.id.slice(0, 8)}`}</span>
+          <span>{copied ? "Copied!" : `Code: ${room.id}`}</span>
         </button>
       </div>
 
@@ -348,14 +365,20 @@ export const RoomView: React.FC<RoomViewProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
             {activePlayers.map((player, idx) => {
               const isThisPlayerOwner = player.id === room.ownerId;
-              const isCurrent = player.id === currentSocketId;
+              const isCurrent =
+                !!currentPlayerToken && player.id === currentPlayerToken;
               const isDrawingNow = player.id === room.game.currentDrawerId;
               const cardStyle = PASTEL_CARD_BG[idx % PASTEL_CARD_BG.length];
 
               return (
                 <div
                   key={player.id}
-                  className={`p-3.5 rounded-2xl border-2 ${cardStyle} flex items-center justify-between gap-2 shadow-xs transition-transform hover:scale-[1.02]`}
+                  className={`p-3.5 rounded-2xl border-2 ${cardStyle} flex items-center justify-between gap-2 shadow-xs transition-transform hover:scale-[1.02] ${
+                    player.isConnected === false ? "opacity-50" : ""
+                  }`}
+                  title={
+                    player.isConnected === false ? "Reconnecting…" : undefined
+                  }
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
                     <div className="w-9 h-9 rounded-xl bg-white/80 border border-white flex items-center justify-center text-lg font-bold shadow-xs">
@@ -364,6 +387,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
                     <div className="min-w-0">
                       <div className="text-sm font-extrabold truncate flex items-center gap-1">
                         {player.username} {isCurrent && "(You)"}
+                        {player.isConnected === false && " (away)"}
                       </div>
                       <div className="text-xs font-black text-[#7C3AED]">
                         {player.score || 0} pts
@@ -392,7 +416,10 @@ export const RoomView: React.FC<RoomViewProps> = ({
                     key={spec.id}
                     className="px-3 py-1 rounded-xl bg-[#F9FAFB] border border-[#E5E7EB] text-xs font-bold text-[#4B5563]"
                   >
-                    👁️ {spec.username} {spec.id === currentSocketId && "(You)"}
+                    👁️ {spec.username}{" "}
+                    {currentPlayerToken &&
+                      spec.id === currentPlayerToken &&
+                      "(You)"}
                   </span>
                 ))}
               </div>

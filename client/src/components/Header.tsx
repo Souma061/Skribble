@@ -1,5 +1,5 @@
+import { Check, Copy, Pencil, Sparkles, Volume2, VolumeX } from "lucide-react";
 import React, { useState } from "react";
-import { Copy, Check, Volume2, VolumeX, Sparkles, Pencil } from "lucide-react";
 
 interface HeaderProps {
   connected: boolean;
@@ -7,7 +7,11 @@ interface HeaderProps {
   roomName?: string;
 }
 
-export const Header: React.FC<HeaderProps> = ({ connected, roomId, roomName }) => {
+export const Header: React.FC<HeaderProps> = ({
+  connected,
+  roomId,
+  roomName,
+}) => {
   const [copied, setCopied] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
 
@@ -45,14 +49,18 @@ export const Header: React.FC<HeaderProps> = ({ connected, roomId, roomName }) =
             {roomName || "Room"}:
           </span>
           <span className="font-mono text-sm font-bold text-[#4C1D95]">
-            {roomId.slice(0, 8)}...
+            {roomId}
           </span>
           <button
             onClick={handleCopyRoom}
             className="p-1 rounded-full hover:bg-[#E9D5FF] text-[#6B21A8] transition-colors"
             title="Copy Room ID"
           >
-            {copied ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
+            {copied ? (
+              <Check className="w-4 h-4 text-green-600" />
+            ) : (
+              <Copy className="w-4 h-4" />
+            )}
           </button>
         </div>
       )}
@@ -64,7 +72,11 @@ export const Header: React.FC<HeaderProps> = ({ connected, roomId, roomName }) =
           className="p-2 rounded-full bg-white border border-[#E5E7EB] hover:bg-[#F9FAFB] text-[#4B5563] shadow-xs transition-colors"
           title={soundEnabled ? "Mute Sound" : "Enable Sound"}
         >
-          {soundEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5 text-[#9CA3AF]" />}
+          {soundEnabled ? (
+            <Volume2 className="w-5 h-5" />
+          ) : (
+            <VolumeX className="w-5 h-5 text-[#9CA3AF]" />
+          )}
         </button>
 
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white border border-[#E5E7EB] shadow-xs">

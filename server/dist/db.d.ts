@@ -15,7 +15,7 @@ export declare function dbCreateRoom(id: string, name: string, ownerId: string):
 /**
  * Upsert/Record player joined
  */
-export declare function dbAddPlayer(roomId: string, id: string, username: string, role: "player" | "spectator"): Promise<{
+export declare function dbAddPlayer(roomId: string, token: string, socketId: string, username: string, role: "player" | "spectator"): Promise<{
     id: string;
     roomId: string;
     socketId: string | null;

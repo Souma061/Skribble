@@ -2,7 +2,7 @@ import { Server, Socket } from "socket.io";
 import { decodeBinaryChunk, isBinaryPayload } from "./binaryDrawing.js";
 import { rateLimit } from "./db.js";
 import { drawingBytesCounter, drawingChunksCounter, drawingPointsCounter, drawingStrokesCounter, } from "./metrics.js";
-import { getRoom } from "./rooms.js";
+import { getPlayerBySocket, getRoom } from "./rooms.js";
 const roomDrawHistories = new Map();
 /** Maximum number of points buffered per stroke to prevent unbounded memory growth */
 const MAX_POINTS_PER_STROKE = 10_000;
@@ -30,7 +30,11 @@ function isDrawerAuthorized(roomId, socketId) {
         return room.game.currentDrawerId === socketId;
     }
     // In the lobby, only the owner can test draw. End-state canvases are read-only.
-    return room.game.status === "WAITING" && room.ownerId === socketId;
+    // Ghosts can't draw: revive first (new socket id), then the drawer check passes again.
+    const me = room ? getPlayerBySocket(room, socketId) : undefined;
+    if (!me?.isConnected)
+        return false;
+    return room.game.status === "WAITING" && me.id === room.ownerId;
 }
 export function registerDrawHandlers(io, socket) {
     // 1. Stroke started — max 60/min (one per pointer-down, not per frame)

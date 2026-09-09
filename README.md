@@ -16,7 +16,7 @@ A multi-player real-time drawing and guessing game (Pictionary-style). One playe
 
 - Rooms with up to **15 active players + 15 spectators** (30 total connections)
 - Live canvas drawing with binary stroke batching and canvas reconstruction
-- Live cursor sync, chat, and leaderboard
+- Live chat and leaderboard
 - Server-authoritative game logic: server-side guess validation, random drawer selection (previous drawer excluded), 120-second rounds, time-based scoring
 - Player reconnection with identity/score restore during a grace period
 - Room lifecycle: auto-delete abandoned rooms after 24h, completed rooms after 2 days, or manual deletion by the owner

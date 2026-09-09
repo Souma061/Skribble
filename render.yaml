@@ -4,7 +4,7 @@ services:
       env: node
       plan: free
       rootDir: server
-      buildCommand: pnpm install && pnpm exec prisma generate && pnpm run build
+      buildCommand: pnpm install && pnpm exec prisma generate && pnpm exec prisma migrate deploy && pnpm run build
       startCommand: pnpm run start
       healthCheckPath: /health
       envVars:

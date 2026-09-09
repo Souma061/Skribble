@@ -108,6 +108,7 @@ export const httpRequestDurationHistogram = new client.Histogram({
 const TRACKED_SOCKET_EVENTS = new Set([
   "room:create",
   "room:join",
+  "room:list",
   "room:leave",
   "room:delete",
   "game:start",

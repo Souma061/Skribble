@@ -19,11 +19,13 @@ const SERVER_URL = getArg("url") || process.env.SERVER_URL || "http://localhost:
 const NUM_ROOMS = Number(getArg("rooms") || process.env.ROOMS) || 5;
 const PLAYERS_PER_ROOM = Number(getArg("players") || process.env.PLAYERS) || 4; // 20 players total by default
 const DURATION_SECONDS = Number(getArg("duration") || process.env.DURATION) || 30;
+const METRICS_TOKEN = getArg("token") || process.env.METRICS_TOKEN || "";
 
 console.log(`\n🚀 Starting Skribble Load Test`);
 console.log(`Server URL: ${SERVER_URL}`);
 console.log(`Simulating: ${NUM_ROOMS} rooms × ${PLAYERS_PER_ROOM} players = ${NUM_ROOMS * PLAYERS_PER_ROOM} concurrent clients`);
-console.log(`Duration:   ${DURATION_SECONDS}s\n`);
+console.log(`Duration:   ${DURATION_SECONDS}s`);
+console.log(`Metrics:    ${METRICS_TOKEN ? "authenticated" : "no token — Lag/RSS will show N/A (pass --token=... or set METRICS_TOKEN)"}\n`);
 
 interface ClientSession {
   socket: Socket;
@@ -34,6 +36,7 @@ interface ClientSession {
 }
 
 const clients: ClientSession[] = [];
+const groupRoomIds = new Map<string, string>();
 let totalMessagesSent = 0;
 let totalMessagesReceived = 0;
 let errorsCount = 0;
@@ -64,6 +67,7 @@ async function run() {
 
       socket.on("room:created", (data: { roomId: string }) => {
         const assignedRoomId = data.roomId;
+        groupRoomIds.set(roomGroup, assignedRoomId);
         const fellowBots = clients.filter((c) => c.roomGroup === roomGroup);
         fellowBots.forEach((c) => (c.roomId = assignedRoomId));
 
@@ -86,6 +90,17 @@ async function run() {
             username,
             role: "player",
           });
+        } else {
+          // Join on own connect — fixes the room:created race where
+          // fellow bots don't exist yet when the owner gets roomId.
+          const knownRoomId = groupRoomIds.get(roomGroup);
+          if (knownRoomId) {
+            socket.emit("room:join", {
+              roomId: knownRoomId,
+              username,
+              role: "player",
+            });
+          }
         }
       });
 
@@ -110,7 +125,7 @@ async function run() {
       // Send chat
       if (Math.random() < 0.3) {
         client.socket.emit("chat:send", {
-          text: `Guess #${Math.floor(Math.random() * 1000)}`,
+          message: `Guess #${Math.floor(Math.random() * 1000)}`,
         });
         totalMessagesSent++;
       }
@@ -150,7 +165,9 @@ async function run() {
     let drawingStats = "Strokes: 0 | Pts: 0";
 
     try {
-      const res = await fetch(`${SERVER_URL}/metrics`);
+      const res = await fetch(`${SERVER_URL}/metrics`, {
+        headers: METRICS_TOKEN ? { Authorization: `Bearer ${METRICS_TOKEN}` } : {},
+      });
       if (res.ok) {
         const text = await res.text();
         const lagMatch = text.match(/skribble_nodejs_eventloop_lag_seconds\s+([\d.e+-]+)/);

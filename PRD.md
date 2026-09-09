@@ -271,7 +271,7 @@ Late joiners
 Spectator mode
 
 Live drawing
-Live cursor synchronization
+Live cursor synchronization (Cancelled by user - adds unnecessary complexity)
 HTML5 Canvas
 Stroke batching
 Canvas reconstruction

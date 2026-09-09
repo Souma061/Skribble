@@ -7,7 +7,7 @@ import {
   drawingPointsCounter,
   drawingStrokesCounter,
 } from "./metrics.js";
-import { getRoom } from "./rooms.js";
+import { getPlayerBySocket, getRoom } from "./rooms.js";
 
 export interface NormalizedPoint {
   x: number;
@@ -56,7 +56,10 @@ function isDrawerAuthorized(roomId: string, socketId: string): boolean {
   }
 
   // In the lobby, only the owner can test draw. End-state canvases are read-only.
-  return room.game.status === "WAITING" && room.ownerId === socketId;
+  // Ghosts can't draw: revive first (new socket id), then the drawer check passes again.
+  const me = room ? getPlayerBySocket(room, socketId) : undefined;
+  if (!me?.isConnected) return false;
+  return room.game.status === "WAITING" && me.id === room.ownerId;
 }
 
 export function registerDrawHandlers(io: Server, socket: Socket) {

@@ -37,7 +37,7 @@ export async function dbCreateRoom(id: string, name: string, ownerId: string) {
 /**
  * Upsert/Record player joined
  */
-export async function dbAddPlayer(roomId: string, id: string, username: string, role: "player" | "spectator") {
+export async function dbAddPlayer(roomId: string, token: string, socketId: string, username: string, role: "player" | "spectator") {
   try {
     // Ensure parent Room exists to satisfy PostgreSQL foreign key constraint (Player_roomId_fkey)
     const inMemoryRoom = getRoom(roomId);
@@ -62,14 +62,14 @@ export async function dbAddPlayer(roomId: string, id: string, username: string, 
         },
       },
       update: {
-        socketId: id,
+        socketId,
         role: role === "spectator" ? "SPECTATOR" : "PLAYER",
         isConnected: true,
       },
       create: {
-        id,
+        id: token,
         roomId,
-        socketId: id,
+        socketId,
         username,
         role: role === "spectator" ? "SPECTATOR" : "PLAYER",
       },

@@ -2,10 +2,13 @@ export type PlayerRole = "player" | "spectator";
 
 export interface Player {
   id: string;
+  socketId?: string;
   username: string;
   role: PlayerRole;
   score: number;
   joinedAt: number;
+  isConnected?: boolean;
+  disconnectedAt?: number | null;
 }
 
 export type GameStatus =
@@ -36,6 +39,15 @@ export interface RoomState {
   serverNow?: number;
   correctGuesserCount?: number;
   maxRounds?: number;
+}
+
+export interface RoomSummary {
+  id: string;
+  name: string;
+  activePlayerCount: number;
+  spectatorCount: number;
+  status: GameStatus;
+  roundNumber: number;
 }
 
 export interface NormalizedPoint {

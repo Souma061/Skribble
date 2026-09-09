@@ -1,14 +1,19 @@
+import type { GameStatus } from "./game/types.js";
 import {
   ABANDONED_MS,
   COMPLETED_MS,
+  GRACE_MS,
   createRoom,
+  getPlayerBySocket,
   getRoom,
   isUsernameTaken,
   joinRoom,
   leaveRoom,
+  markDisconnected,
   markRoomCompleted,
   MAX_ACTIVE_PLAYERS,
   MAX_SPECTATORS,
+  pruneDisconnected,
   RoomError,
   startGame,
   sweepExpired,
@@ -61,7 +66,7 @@ try {
 console.log("Testing Room Creation and Initial State...");
 const room1 = createRoom("My Room", "socket_1", "Alice", "player");
 assert(room1.name === "My Room", "sets room name");
-assert(room1.ownerId === "socket_1", "assigns creator as owner");
+assert(room1.ownerId === getPlayerBySocket(room1, "socket_1")!.id, "assigns creator as owner (token)");
 assert(room1.players.size === 1, "room has 1 player");
 assert(room1.abandonedAt === null, "room is not abandoned on creation");
 assert(room1.completedAt === null, "room is not completed on creation");
@@ -119,12 +124,15 @@ joinRoom(ownerRoom.id, "spec_sock", "SpecCharlie", "spectator");
 
 leaveRoom(ownerRoom.id, "owner_sock");
 assert(ownerRoom.players.size === 2, "owner left, 2 players remain");
-assert(ownerRoom.ownerId === "guest_sock", "ownership transferred to next active player GuestBob");
+assert(
+  ownerRoom.ownerId === getPlayerBySocket(ownerRoom, "guest_sock")!.id,
+  "ownership transferred to next active player GuestBob",
+);
 assert(ownerRoom.abandonedAt === null, "room is not marked abandoned while players remain");
 
 leaveRoom(ownerRoom.id, "guest_sock");
 assert(
-  ownerRoom.ownerId === "spec_sock",
+  ownerRoom.ownerId === getPlayerBySocket(ownerRoom, "spec_sock")!.id,
   "ownership transferred to remaining spectator SpecCharlie",
 );
 assert(ownerRoom.abandonedAt === null, "room still not abandoned");
@@ -141,7 +149,10 @@ assert(
 // Rejoining before 24h un-abandons the room
 const revivedRoom = joinRoom(ownerRoom.id, "rejoin_sock", "NewHero", "player", baseTime + 1000);
 assert(revivedRoom.abandonedAt === null, "room un-abandoned after player rejoins");
-assert(revivedRoom.ownerId === "rejoin_sock", "rejoining player becomes new owner");
+assert(
+  revivedRoom.ownerId === getPlayerBySocket(revivedRoom, "rejoin_sock")!.id,
+  "rejoining player becomes new owner",
+);
 assert(revivedRoom.players.size === 1, "revived room has 1 player");
 
 // Test expiration after 24h
@@ -208,8 +219,8 @@ try {
 }
 
 console.log("Testing Completed Match Reset...");
-gameRoom.players.get("owner_1")!.score = 500;
-gameRoom.players.get("player_2")!.score = 250;
+getPlayerBySocket(gameRoom, "owner_1")!.score = 500;
+getPlayerBySocket(gameRoom, "player_2")!.score = 250;
 gameRoom.game.status = "COMPLETED";
 markRoomCompleted(gameRoom.id, baseTime);
 startGame(gameRoom.id, "owner_1");
@@ -219,6 +230,95 @@ assert(
 );
 assert(gameRoom.completedAt === null, "clears completed timestamp for Play Again");
 assert(gameRoom.game.roundNumber === 1, "restarts round numbering for Play Again");
+
+console.log("Testing Reconnection...");
+const reRoom = createRoom("Reconnect Room", "sock_a", "GhostAnn", "player");
+joinRoom(reRoom.id, "sock_b", "StayBob", "player");
+const ghostToken = getPlayerBySocket(reRoom, "sock_a")!.id;
+// Earn score, then drop
+reRoom.players.get(ghostToken)!.score = 150;
+markDisconnected(reRoom.id, "sock_a", baseTime);
+assert(
+  getPlayerBySocket(reRoom, "sock_a")?.isConnected === false,
+  "disconnect sleeps the player instead of deleting",
+);
+assert(reRoom.players.has(ghostToken), "ghost keeps its seat during grace");
+// Revive with same token on a new socket
+joinRoom(reRoom.id, "sock_a2", "GhostAnn", "player", baseTime + 1000, ghostToken);
+const revived = reRoom.players.get(ghostToken)!;
+assert(revived.isConnected, "revive reconnects the ghost");
+assert(revived.socketId === "sock_a2", "revive swaps to the new socket");
+assert(revived.score === 150, "revive keeps score");
+assert(revived.username === "GhostAnn", "revive keeps username and role");
+
+console.log("Testing Reconnection Expiry...");
+markDisconnected(reRoom.id, "sock_a2", baseTime);
+const prunedEarly = pruneDisconnected(baseTime + GRACE_MS - 1000);
+assert(!prunedEarly.includes(reRoom.id), "ghost survives inside the grace window");
+const pruned = pruneDisconnected(baseTime + GRACE_MS + 1000);
+assert(pruned.includes(reRoom.id), "ghost evicted after grace expiry");
+assert(!reRoom.players.has(ghostToken), "evicted ghost is truly gone");
+
+console.log("Testing Token Name Rules...");
+const nameRoom = createRoom("Name Room", "n_sock", "TakenName", "player");
+const takenToken = getPlayerBySocket(nameRoom, "n_sock")!.id;
+markDisconnected(nameRoom.id, "n_sock", baseTime);
+try {
+  joinRoom(nameRoom.id, "intruder_sock", "TakenName", "player", baseTime + 1000);
+  assert(false, "stranger should be blocked by the ghost's name");
+} catch (e) {
+  assert(e instanceof RoomError && e.code === "USERNAME_TAKEN", "stranger blocked by ghost name");
+}
+joinRoom(nameRoom.id, "owner_new_sock", "TakenName", "player", baseTime + 1000, takenToken);
+assert(
+  getPlayerBySocket(nameRoom, "owner_new_sock")?.id === takenToken,
+  "own token bypasses the name check",
+);
+
+console.log("Testing Ghost Exclusion...");
+const exclRoom = createRoom("Excl Room", "e1", "One", "player");
+joinRoom(exclRoom.id, "e2", "Two", "player");
+joinRoom(exclRoom.id, "e3", "Three", "player");
+markDisconnected(exclRoom.id, "e2", baseTime);
+const { drawerId: exclDrawer } = startGame(exclRoom.id, "e1");
+assert(exclDrawer !== "e2", "ghost excluded from the drawer pool");
+assert(exclDrawer === "e1" || exclDrawer === "e3", "drawer picked from connected players");
+assert(
+  isUsernameTaken(exclRoom, "Two", "some-other-token"),
+  "sanity: name check still sees the ghost",
+);
+
+console.log("Testing Round Advancement...");
+const advRoom = createRoom("Advance Room", "a1", "AdvOne", "player");
+joinRoom(advRoom.id, "a2", "AdvTwo", "player");
+joinRoom(advRoom.id, "a3", "AdvThree", "player");
+startGame(advRoom.id, "a1");
+assert(advRoom.game.roundNumber === 1, "match starts at round 1");
+getPlayerBySocket(advRoom, "a1")!.score = 100;
+// Simulate round 1 ending (non-final): ROUND_ENDING, not COMPLETED
+const simulatedEnd: GameStatus = "ROUND_ENDING";
+advRoom.game.status = simulatedEnd;
+startGame(advRoom.id, "a1");
+assert(advRoom.game.roundNumber === 2, "advances to round 2 from ROUND_ENDING");
+assert(
+  (advRoom.game.status as GameStatus) === "WORD_SELECTION",
+  "round 2 enters WORD_SELECTION",
+);
+assert(
+  getPlayerBySocket(advRoom, "a1")!.score === 100,
+  "scores carry across rounds (no reset mid-match)",
+);
+try {
+  const simulatedActive: GameStatus = "ACTIVE_ROUND";
+  advRoom.game.status = simulatedActive;
+  startGame(advRoom.id, "a1");
+  assert(false, "should still reject starting during ACTIVE_ROUND");
+} catch (e) {
+  assert(
+    e instanceof RoomError && e.code === "GAME_IN_PROGRESS",
+    "ACTIVE_ROUND guard still enforced",
+  );
+}
 
 console.log(failed ? `\nRESULT: FAIL (${failed} errors)` : "\nRESULT: ALL ROOM TESTS PASSED");
 process.exit(failed ? 1 : 0);

@@ -3,9 +3,27 @@ import { io, Socket } from "socket.io-client";
 import { Header } from "./components/Header";
 import { LobbyView } from "./components/LobbyView";
 import { RoomView } from "./components/RoomView";
-import type { PlayerRole, RoomState } from "./types";
+import type { PlayerRole, RoomState, RoomSummary } from "./types";
 
 const SOCKET_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:9000";
+
+const AUTH_KEY = "skribble.auth";
+
+interface SavedAuth {
+  playerToken: string;
+  roomId: string;
+  username: string;
+  role: PlayerRole;
+}
+
+function loadAuth(): SavedAuth | null {
+  try {
+    const raw = localStorage.getItem(AUTH_KEY);
+    return raw ? (JSON.parse(raw) as SavedAuth) : null;
+  } catch {
+    return null;
+  }
+}
 
 function App() {
   const [connected, setConnected] = useState(false);
@@ -14,6 +32,11 @@ function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [activeSocket, setActiveSocket] = useState<Socket | null>(null);
+  const [roomList, setRoomList] = useState<RoomSummary[]>([]);
+  // Stable identity (token); socket.id is only the wire address.
+  const [playerToken, setPlayerToken] = useState<string | null>(
+    () => loadAuth()?.playerToken ?? null,
+  );
 
   const socketRef = useRef<Socket | null>(null);
 
@@ -28,6 +51,16 @@ function App() {
       setConnected(true);
       setSocketId(socket.id ?? null);
       console.log("Connected to Socket.IO:", socket.id);
+      // Rejoin with saved token: fresh load and network blip look identical here.
+      const auth = loadAuth();
+      if (auth?.playerToken && auth?.roomId) {
+        socket.emit("room:join", {
+          roomId: auth.roomId,
+          username: auth.username,
+          role: auth.role,
+          playerToken: auth.playerToken,
+        });
+      }
     });
 
     socket.on("disconnect", () => {
@@ -40,37 +73,102 @@ function App() {
     // Room Event Listeners
     socket.on(
       "room:created",
-      (payload: { roomId: string; room: RoomState }) => {
+      (payload: { roomId: string; room: RoomState; playerToken?: string }) => {
+        if (payload.playerToken) {
+          setPlayerToken(payload.playerToken);
+          try {
+            const me = payload.room.players.find(
+              (p) => p.id === payload.playerToken,
+            );
+            localStorage.setItem(
+              AUTH_KEY,
+              JSON.stringify({
+                playerToken: payload.playerToken,
+                roomId: payload.roomId,
+                username: me?.username ?? "",
+                role: me?.role ?? "player",
+              } satisfies SavedAuth),
+            );
+          } catch {
+            // private-mode storage; game still works, just no auto-rejoin
+          }
+        }
         setRoom(payload.room);
         setLoading(false);
         setErrorMessage(null);
       },
     );
 
-    socket.on("room:joined", (payload: { roomId: string; room: RoomState }) => {
-      setRoom(payload.room);
-      setLoading(false);
-      setErrorMessage(null);
-    });
+    socket.on(
+      "room:joined",
+      (payload: { roomId: string; room: RoomState; playerToken?: string }) => {
+        if (payload.playerToken) {
+          setPlayerToken(payload.playerToken);
+          try {
+            const me = payload.room.players.find(
+              (p) => p.id === payload.playerToken,
+            );
+            localStorage.setItem(
+              AUTH_KEY,
+              JSON.stringify({
+                playerToken: payload.playerToken,
+                roomId: payload.roomId,
+                username: me?.username ?? "",
+                role: me?.role ?? "player",
+              } satisfies SavedAuth),
+            );
+          } catch {
+            // private-mode storage; game still works, just no auto-rejoin
+          }
+        }
+        setRoom(payload.room);
+        setLoading(false);
+        setErrorMessage(null);
+      },
+    );
 
     socket.on("room:state", (updatedRoom: RoomState) => {
       setRoom(updatedRoom);
     });
 
     socket.on("room:left", () => {
+      try {
+        localStorage.removeItem(AUTH_KEY);
+      } catch {
+        // ignore
+      }
+      setPlayerToken(null);
       setRoom(null);
       setLoading(false);
     });
 
     socket.on("room:deleted", () => {
+      try {
+        localStorage.removeItem(AUTH_KEY);
+      } catch {
+        // ignore
+      }
+      setPlayerToken(null);
       setRoom(null);
       setErrorMessage("The room was deleted by the host.");
       setLoading(false);
     });
 
     socket.on("room:error", (err: { code: string; message: string }) => {
+      // Saved room is gone (swept/deleted while away): stop retrying it.
+      if (err.code === "ROOM_NOT_FOUND" || err.code === "ROOM_ABANDONED") {
+        try {
+          localStorage.removeItem(AUTH_KEY);
+        } catch {
+          // ignore
+        }
+      }
       setErrorMessage(err.message || "An error occurred");
       setLoading(false);
+    });
+
+    socket.on("room:list", (payload: { rooms: RoomSummary[] }) => {
+      setRoomList(payload.rooms ?? []);
     });
 
     return () => {
@@ -115,6 +213,11 @@ function App() {
     socketRef.current.emit("game:start");
   };
 
+  const handleListRooms = () => {
+    if (!socketRef.current) return;
+    socketRef.current.emit("room:list");
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-[#FDF8F9] bg-[radial-gradient(#E9E4F7_1px,transparent_1px)] [background-size:20px_20px]">
       <Header connected={connected} roomId={room?.id} roomName={room?.name} />
@@ -127,12 +230,16 @@ function App() {
             errorMessage={errorMessage}
             onClearError={() => setErrorMessage(null)}
             loading={loading}
+            rooms={roomList}
+            onRefreshRooms={handleListRooms}
           />
         ) : (
           <RoomView
             socket={activeSocket}
             room={room}
             currentSocketId={socketId}
+            currentPlayerToken={playerToken}
+            connected={connected}
             onLeaveRoom={handleLeaveRoom}
             onDeleteRoom={handleDeleteRoom}
             onStartGame={handleStartGame}

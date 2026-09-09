@@ -1,14 +1,17 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import { Eraser, Eye, Pencil, RotateCcw, Trash2 } from "lucide-react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Socket } from "socket.io-client";
+import type {
+  NormalizedPoint,
+  Stroke,
+  StrokeChunkPayload,
+  StrokeStartPayload,
+} from "../types";
 import {
-  RotateCcw,
-  Trash2,
-  Eraser,
-  Eye,
-  Pencil,
-} from "lucide-react";
-import type { NormalizedPoint, Stroke, StrokeStartPayload, StrokeChunkPayload } from "../types";
-import { encodeBinaryChunk, decodeBinaryChunk, isBinaryPayload } from "../utils/binaryDrawing";
+  decodeBinaryChunk,
+  encodeBinaryChunk,
+  isBinaryPayload,
+} from "../utils/binaryDrawing";
 
 interface DrawingCanvasProps {
   socket: Socket | null;
@@ -79,7 +82,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
       const pts = stroke.points;
       const isEraserStroke = stroke.color.toLowerCase() === "#ffffff";
-      ctx.globalCompositeOperation = isEraserStroke ? "destination-out" : "source-over";
+      ctx.globalCompositeOperation = isEraserStroke
+        ? "destination-out"
+        : "source-over";
 
       ctx.beginPath();
       ctx.strokeStyle = stroke.color;
@@ -165,10 +170,18 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
   // Flush queued points over socket (throttled binary chunk)
   const flushBatch = useCallback(() => {
-    if (!socket || !currentStrokeRef.current || batchBufferRef.current.length === 0) return;
+    if (
+      !socket ||
+      !currentStrokeRef.current ||
+      batchBufferRef.current.length === 0
+    )
+      return;
 
     // Encode points into compact binary ArrayBuffer
-    const binaryChunk = encodeBinaryChunk(strokeSeqRef.current, batchBufferRef.current);
+    const binaryChunk = encodeBinaryChunk(
+      strokeSeqRef.current,
+      batchBufferRef.current,
+    );
     socket.emit("draw:chunk", binaryChunk);
 
     batchBufferRef.current = [];
@@ -258,7 +271,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   }, [socket, requestRedraw]);
 
   // Helper to get normalized 4-decimal precision point
-  const getNormalizedPoint = (e: React.PointerEvent<HTMLCanvasElement>): NormalizedPoint | null => {
+  const getNormalizedPoint = (
+    e: React.PointerEvent<HTMLCanvasElement>,
+  ): NormalizedPoint | null => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
@@ -314,7 +329,13 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
   // Pointer Move (Draw & Accumulate Points with Distance Jitter Filter)
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!isDrawer || disabled || !isDrawingRef.current || !currentStrokeRef.current) return;
+    if (
+      !isDrawer ||
+      disabled ||
+      !isDrawingRef.current ||
+      !currentStrokeRef.current
+    )
+      return;
 
     const normPoint = getNormalizedPoint(e);
     if (!normPoint) return;
@@ -323,7 +344,8 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     const pts = currentStrokeRef.current.points;
     if (pts.length > 0) {
       const lastPt = pts[pts.length - 1];
-      const distSq = (normPoint.x - lastPt.x) ** 2 + (normPoint.y - lastPt.y) ** 2;
+      const distSq =
+        (normPoint.x - lastPt.x) ** 2 + (normPoint.y - lastPt.y) ** 2;
       if (distSq < MIN_POINT_DIST_SQ) return;
     }
 
@@ -382,7 +404,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           )}
         </div>
         <span className="text-[11px] font-semibold text-[#9CA3AF]">
-          Room: {roomId.slice(0, 8)}
+          Room: {roomId}
         </span>
       </div>
 
@@ -399,7 +421,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           onPointerLeave={handlePointerUp}
           onPointerCancel={handlePointerUp}
           className={`w-full h-full block ${
-            isDrawer && !disabled ? "cursor-crosshair" : "cursor-default pointer-events-none"
+            isDrawer && !disabled
+              ? "cursor-crosshair"
+              : "cursor-default pointer-events-none"
           }`}
         />
       </div>

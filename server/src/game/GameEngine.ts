@@ -58,6 +58,12 @@ export class GameEngine {
     this.drawerQueue.splice(index, 1);
     return true;
   }
+
+  // Revive path: a ghost's queued seat moves to its new socket id, keeping turn order.
+  swapQueuedPlayer(oldId: string, newId: string): void {
+    const index = this.drawerQueue.indexOf(oldId);
+    if (index !== -1) this.drawerQueue[index] = newId;
+  }
 }
 
 export class EngineError extends Error {

@@ -7,6 +7,7 @@ export declare class GameEngine {
     getState(): GameState;
     selectDrawer(playerIds: string[], random?: () => number): string;
     removeQueuedPlayer(playerId: string): boolean;
+    swapQueuedPlayer(oldId: string, newId: string): void;
 }
 export declare class EngineError extends Error {
     code: string;

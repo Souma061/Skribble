@@ -1,4 +1,4 @@
-import { ArrowRight, Sparkles, Trophy } from "lucide-react";
+import { Sparkles, Trophy } from "lucide-react";
 import React from "react";
 import type { Player } from "../types";
 
@@ -6,18 +6,14 @@ interface RoundEndModalProps {
   isOpen: boolean;
   revealedWord: string;
   reason: string;
-  isOwner: boolean;
   players: Player[];
-  onNextRound: () => void;
 }
 
 export const RoundEndModal: React.FC<RoundEndModalProps> = ({
   isOpen,
   revealedWord,
   reason,
-  isOwner,
   players,
-  onNextRound,
 }) => {
   if (!isOpen) return null;
 
@@ -60,10 +56,16 @@ export const RoundEndModal: React.FC<RoundEndModalProps> = ({
                 className="flex items-center justify-between p-2 rounded-xl bg-[#F9FAFB] border border-[#F3F4F6] text-xs"
               >
                 <div className="flex items-center gap-2">
-                  <span className="font-extrabold text-[#7C3AED] w-4">#{idx + 1}</span>
-                  <span className="font-bold text-[#374151]">{player.username}</span>
+                  <span className="font-extrabold text-[#7C3AED] w-4">
+                    #{idx + 1}
+                  </span>
+                  <span className="font-bold text-[#374151]">
+                    {player.username}
+                  </span>
                 </div>
-                <span className="font-black text-[#6D28D9]">{player.score || 0} pts</span>
+                <span className="font-black text-[#6D28D9]">
+                  {player.score || 0} pts
+                </span>
               </div>
             ))}
           </div>
@@ -71,19 +73,9 @@ export const RoundEndModal: React.FC<RoundEndModalProps> = ({
 
         {/* Next Round Action */}
         <div className="pt-2 border-t border-[#F3F4F6]">
-          {isOwner ? (
-            <button
-              onClick={onNextRound}
-              className="w-full py-3.5 rounded-2xl bg-[#7C3AED] hover:bg-[#6D28D9] text-white text-sm font-extrabold btn-squishy flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-md"
-            >
-              <span>Next Turn / Drawer</span>
-              <ArrowRight className="w-4 h-4" />
-            </button>
-          ) : (
-            <div className="text-xs font-bold text-[#7C3AED] bg-[#EDE9FE] py-2.5 px-4 rounded-2xl animate-pulse">
-              Waiting for host to start the next turn...
-            </div>
-          )}
+          <div className="text-xs font-bold text-[#7C3AED] bg-[#EDE9FE] py-2.5 px-4 rounded-2xl text-center">
+            Next turn starting automatically...
+          </div>
         </div>
       </div>
     </div>
