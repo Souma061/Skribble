@@ -16,22 +16,26 @@ A multi-player real-time drawing and guessing game (Pictionary-style). One playe
 
 - Rooms with up to **15 active players + 15 spectators** (30 total connections)
 - Live canvas drawing with binary stroke batching and canvas reconstruction
-- Live chat and leaderboard
-- Server-authoritative game logic: server-side guess validation, random drawer selection (previous drawer excluded), 120-second rounds, time-based scoring
-- Player reconnection with identity/score restore during a grace period
+- Live chat with late-joiner history, secret-word filtering, and close-guess hints
+- Server-authoritative game logic: drawer selection via shuffled queue (each player draws once per match), 120-second rounds, time-based scoring
+- Player reconnection: stable `playerToken` identity persisted in `localStorage`, 120-second grace period for disconnects, fast browser refresh rebind
+- Drawer disconnect handling: 30-second fuse timer — round ends if drawer doesn't return
+- Rate limiting on all socket events including drawing
+- Room listing with live player counts
+- PostgreSQL persistence: rooms, players, rounds, strokes, chat, and correct guesses
 - Room lifecycle: auto-delete abandoned rooms after 24h, completed rooms after 2 days, or manual deletion by the owner
-- Input validation, authorization, and rate limiting
 
-See [`PRD.md`](./PRD.md) for the finalized product decisions.
+See [`PRD.md`](./PRD.md) for the finalized product decisions and [`CODE_REVIEW.md`](./CODE_REVIEW.md) for the security/quality audit.
 
 ## Project Structure
 
 ```text
 skribble_game/
-├── client/    # React + Vite frontend
-├── server/    # Express + Socket.IO backend
-├── render.yaml  # Render deployment config
-└── PRD.md
+├── client/        # React + Vite frontend
+├── server/        # Express + Socket.IO backend
+├── render.yaml    # Render deployment config
+├── PRD.md
+└── CODE_REVIEW.md
 ```
 
 ## Getting Started
@@ -64,7 +68,7 @@ The client connects to the server via `VITE_SERVER_URL` (default `http://localho
 | Command            | Location | Description                         |
 | ------------------ | -------- | ----------------------------------- |
 | `pnpm run dev`     | server   | Run server with hot reload          |
-| `pnpm run test`    | server   | Run Room + GameEngine tests         |
+| `pnpm run test`    | server   | Run binary drawing, GameEngine, and room tests |
 | `pnpm run build`   | server   | Type-check and compile to `dist/`   |
 | `pnpm run start`   | server   | Run compiled server                 |
 | `pnpm run dev`     | client   | Vite dev server                     |
@@ -76,3 +80,40 @@ The client connects to the server via `VITE_SERVER_URL` (default `http://localho
 
 - **Server**: `render.yaml` deploys `server/` to Render with `DATABASE_URL` and a generated `METRICS_TOKEN`; `/health` is the health check. Scrape `/metrics` with `Authorization: Bearer <METRICS_TOKEN>`.
 - **Client**: `client/vercel.json` deploys to Vercel; the Socket.IO URL is `https://skribble-eight.vercel.app` by default (set `CLIENT_URL` on the server to match).
+
+## Architecture
+
+The server enforces all game rules — the client is a thin rendering layer.
+
+```
+Client (React + Socket.IO)
+    │
+    ├─ emit: room:create, room:join, game:start, round:set-word
+    ├─ emit: draw:start, draw:chunk, draw:end, draw:clear, draw:undo
+    ├─ emit: chat:send, chat:request-sync
+    │
+    ▼
+Server (Express + Socket.IO)
+    ├─ rooms.ts        — pure state transitions (join, leave, sweep, prune)
+    ├─ roomHandlers.ts — socket event wiring, validation, timers, round flow
+    ├─ drawHandlers.ts — binary/JSON drawing stream, stroke persistence
+    ├─ GameEngine      — drawer queue, word masking, round lifecycle
+    ├─ db.ts           — Prisma queries, rate limiter, metrics
+    └─ index.ts        — Express app, health/metrics endpoints
+    │
+    ▼
+PostgreSQL (Prisma)
+    ├─ Room, Player, Round, CorrectGuess, DrawingStroke, ChatMessage, Word
+```
+
+### Identity Model
+
+Each player has a stable `playerToken` (UUID) generated on first join and stored in the browser's `localStorage`. This token is the primary key for room membership — it survives disconnects, browser refreshes, and network blips. `socket.id` is an ephemeral wire address that gets remapped on rejoin.
+
+### Reconnection Flow
+
+1. Client connects and sends `room:join` with its saved `playerToken`
+2. Server finds the ghost player (seat reserved for up to 120 seconds)
+3. Socket ID is rebound, round state is re-emitted (word/blanks for drawer, masked word for guessers)
+4. If the ghost was the drawer, the fuse timer is cancelled and the round continues
+5. If grace period expires, the ghost is evicted and another player can take the name
