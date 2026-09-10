@@ -27,7 +27,6 @@ function loadAuth(): SavedAuth | null {
 
 function App() {
   const [connected, setConnected] = useState(false);
-  const [socketId, setSocketId] = useState<string | null>(null);
   const [room, setRoom] = useState<RoomState | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -49,7 +48,6 @@ function App() {
     socket.on("connect", () => {
       setActiveSocket(socket);
       setConnected(true);
-      setSocketId(socket.id ?? null);
       console.log("Connected to Socket.IO:", socket.id);
       // Rejoin with saved token: fresh load and network blip look identical here.
       const auth = loadAuth();
@@ -66,7 +64,6 @@ function App() {
     socket.on("disconnect", () => {
       setActiveSocket(null);
       setConnected(false);
-      setSocketId(null);
       console.log("Disconnected from Socket.IO");
     });
 
@@ -237,7 +234,6 @@ function App() {
           <RoomView
             socket={activeSocket}
             room={room}
-            currentSocketId={socketId}
             currentPlayerToken={playerToken}
             connected={connected}
             onLeaveRoom={handleLeaveRoom}

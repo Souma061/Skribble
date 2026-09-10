@@ -57,6 +57,7 @@ export interface Room {
   correctGuesserIds: string[];
   maxRounds: number; // total rounds per match = active player count when game starts
   chatHistory: ChatMessage[];
+  currentRoundId?: string;
 }
 
 const rooms = new Map<string, Room>();
@@ -228,7 +229,7 @@ export function startGame(roomId: string, socketId?: string): { room: Room; draw
 
   const eligiblePlayers = [...room.players.values()]
     .filter((p) => p.role === "player" && p.isConnected)
-    .map((p) => p.socketId);
+    .map((p) => p.id);
 
   if (eligiblePlayers.length < 2) {
     throw new RoomError("NOT_ENOUGH_PLAYERS", "At least two active players are required");
@@ -286,19 +287,13 @@ export function joinRoom(
   }
 
   // Revive path: a known token for a sleeping player reclaims its seat.
-  // A token for an already-connected player is ignored (no hijacking).
+  // A token for an already-connected player is treated as a fast browser refresh — rebind socket.
   const ghost = playerToken ? room.players.get(playerToken) : undefined;
-  if (ghost && !ghost.isConnected) {
-    const oldSocketId = ghost.socketId;
+  if (ghost) {
     ghost.socketId = socketId;
     ghost.isConnected = true;
     ghost.disconnectedAt = null;
-    // Live-round references are socket-id based: remap them to the new wire.
-    // correctGuesserIds stores stable player tokens — no remap needed.
-    if (room.game.currentDrawerId === oldSocketId) {
-      room.game.currentDrawerId = socketId;
-    }
-    room.engine.swapQueuedPlayer(oldSocketId, socketId);
+    // currentDrawerId and drawerQueue use stable player tokens — no remap needed.
     if (room.abandonedAt !== null) room.abandonedAt = null;
     return room;
   }
@@ -378,7 +373,7 @@ export function pruneDisconnected(now = Date.now()): string[] {
     let changed = false;
     for (const [token, player] of room.players) {
       if (!player.isConnected && player.disconnectedAt !== null && now - player.disconnectedAt >= GRACE_MS) {
-        if (room.engine.removeQueuedPlayer(player.socketId)) {
+        if (room.engine.removeQueuedPlayer(player.id)) {
           room.maxRounds = Math.max(room.game.roundNumber, room.maxRounds - 1);
         }
         room.players.delete(token);
@@ -424,7 +419,7 @@ export function leaveRoom(roomId: string, socketId: string, now = Date.now()): R
 
   const player = getPlayerBySocket(room, socketId);
   if (player) {
-    if (room.engine.removeQueuedPlayer(socketId)) {
+    if (room.engine.removeQueuedPlayer(player.id)) {
       room.maxRounds = Math.max(room.game.roundNumber, room.maxRounds - 1);
     }
     room.players.delete(player.id);

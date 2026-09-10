@@ -9,6 +9,7 @@ import {
   requireMetricsAuth,
   setupSocketMetrics,
 } from "./metrics.js";
+import { dbSweepExpiredRooms, sweepRateLimitBuckets } from "./db.js";
 import { registerSocketHandlers } from "./roomHandlers.js";
 
 dotenv.config();
@@ -43,6 +44,17 @@ const io = new Server(httpServer, {
 
 setupSocketMetrics(io);
 registerSocketHandlers(io);
+
+// Enforce PRD DB retention: sweep abandoned (>24h) and completed (>48h) rooms
+dbSweepExpiredRooms().catch((err) =>
+  console.error("[DB Sweeper] Initial sweep failed:", err),
+);
+setInterval(() => {
+  dbSweepExpiredRooms().catch((err) =>
+    console.error("[DB Sweeper] Periodic sweep failed:", err),
+  );
+  sweepRateLimitBuckets();
+}, 15 * 60 * 1000).unref();
 
 httpServer.listen(port, () => {
   console.log(`HTTP + Socket.IO running on port ${port}`);

@@ -39,6 +39,7 @@ export interface RoomState {
   serverNow?: number;
   correctGuesserCount?: number;
   maxRounds?: number;
+  chatHistory?: ChatMessage[];
 }
 
 export interface RoomSummary {

@@ -274,6 +274,7 @@ Live drawing
 Live cursor synchronization (Cancelled by user - adds unnecessary complexity)
 HTML5 Canvas
 Stroke batching
+Stroke finalization (`draw:end`)
 Canvas reconstruction
 
 Live chat

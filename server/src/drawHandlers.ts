@@ -1,6 +1,6 @@
 import { Server, Socket } from "socket.io";
 import { decodeBinaryChunk, isBinaryPayload } from "./binaryDrawing.js";
-import { rateLimit } from "./db.js";
+import { dbSaveStroke, rateLimit } from "./db.js";
 import {
   drawingBytesCounter,
   drawingChunksCounter,
@@ -50,15 +50,15 @@ function isDrawerAuthorized(roomId: string, socketId: string): boolean {
   const room = getRoom(roomId);
   if (!room) return false;
 
+  const me = getPlayerBySocket(room, socketId);
+  if (!me?.isConnected) return false;
+
   // During an active game round: ONLY the selected drawer can draw
   if (room.game.status === "ACTIVE_ROUND" || room.game.status === "WORD_SELECTION") {
-    return room.game.currentDrawerId === socketId;
+    return room.game.currentDrawerId === me.id;
   }
 
   // In the lobby, only the owner can test draw. End-state canvases are read-only.
-  // Ghosts can't draw: revive first (new socket id), then the drawer check passes again.
-  const me = room ? getPlayerBySocket(room, socketId) : undefined;
-  if (!me?.isConnected) return false;
   return room.game.status === "WAITING" && me.id === room.ownerId;
 }
 
@@ -211,6 +211,41 @@ export function registerDrawHandlers(io: Server, socket: Socket) {
     }
 
     socket.to(roomId).emit("draw:chunk", { strokeId, points: safePoints });
+  });
+
+  // 3. Stroke completed (pointer up) — persist to PostgreSQL asynchronously & notify room
+  socket.on("draw:end", (payload: { strokeId?: string; seq?: number }) => {
+    if (!rateLimit(socket.id, "draw:end", 30, 1_000)) return;
+    const roomId = socket.data.roomId as string | undefined;
+    if (!roomId) return;
+    if (!isDrawerAuthorized(roomId, socket.id)) return;
+
+    const room = getRoom(roomId);
+    const strokes = roomDrawHistories.get(roomId);
+    if (strokes && strokes.length > 0) {
+      let stroke: Stroke | undefined;
+      if (payload?.seq !== undefined) {
+        stroke = strokes.find((s) => s.seq === payload.seq) || strokes[strokes.length - 1];
+      } else if (payload?.strokeId) {
+        stroke = strokes.find((s) => s.id === payload.strokeId) || strokes[strokes.length - 1];
+      } else {
+        stroke = strokes[strokes.length - 1];
+      }
+
+      // If in an active round, persist stroke to DB in background
+      if (room?.currentRoundId && stroke) {
+        const strokeOrder = strokes.indexOf(stroke) + 1;
+        dbSaveStroke(
+          room.currentRoundId,
+          strokeOrder,
+          stroke.color,
+          stroke.size,
+          stroke.points,
+        ).catch((err) => console.error("[DB] Failed to save stroke on draw:end:", err));
+      }
+    }
+
+    socket.to(roomId).emit("draw:end", payload);
   });
 
   // 3. Clear canvas — max 10/min

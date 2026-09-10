@@ -257,15 +257,22 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       requestRedraw();
     };
 
+    // 6. Remote Stroke End
+    const handleRemoteEnd = () => {
+      requestRedraw();
+    };
+
     socket.on("draw:sync", handleSync);
     socket.on("draw:start", handleRemoteStart);
     socket.on("draw:chunk", handleRemoteChunk);
+    socket.on("draw:end", handleRemoteEnd);
     socket.on("draw:clear", handleRemoteClear);
 
     return () => {
       socket.off("draw:sync", handleSync);
       socket.off("draw:start", handleRemoteStart);
       socket.off("draw:chunk", handleRemoteChunk);
+      socket.off("draw:end", handleRemoteEnd);
       socket.off("draw:clear", handleRemoteClear);
     };
   }, [socket, requestRedraw]);
@@ -367,6 +374,14 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       clearInterval(batchTimerRef.current);
       batchTimerRef.current = null;
     }
+
+    if (currentStrokeRef.current) {
+      socket?.emit("draw:end", {
+        strokeId: currentStrokeRef.current.id,
+        seq: currentStrokeRef.current.seq,
+      });
+    }
+
     currentStrokeRef.current = null;
   };
 

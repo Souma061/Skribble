@@ -1,7 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { Server, Socket } from "socket.io";
-import { dbAddPlayer, dbCreateRoom, dbGetRandomWords, rateLimit, socketCleanup } from "./db.js";
-import { clearRoomStrokes, registerDrawHandlers } from "./drawHandlers.js";
+import {
+  dbAddPlayer,
+  dbClearRoomAbandoned,
+  dbCreateRoom,
+  dbCreateRound,
+  dbDeleteRoom,
+  dbFinishRound,
+  dbGetRandomWords,
+  dbSaveChatMessage,
+  dbSaveCorrectGuess,
+  dbSaveRoundStrokesBatch,
+  dbSetRoomAbandoned,
+  dbUpdatePlayerConnection,
+  dbUpdatePlayerScore,
+  dbUpdateRoomStatus,
+  rateLimit,
+  socketCleanup,
+} from "./db.js";
+import { clearRoomStrokes, getRoomStrokes, registerDrawHandlers } from "./drawHandlers.js";
 import { calculateRemainingSeconds, crossedTimeThreshold } from "./game/timerUtils.js";
 import {
   doesMessageRevealWord,
@@ -82,6 +99,15 @@ export function registerSocketHandlers(io: Server) {
       handleChatSend(io, socket)(payload);
     });
 
+    socket.on("chat:request-sync", () => {
+      if (!rateLimit(socket.id, "chat:request-sync", 10, 60_000)) return;
+      const roomId = socket.data.roomId as string | undefined;
+      const room = getRoom(roomId);
+      if (room) {
+        socket.emit("chat:history", { history: room.chatHistory || [] });
+      }
+    });
+
     // Register drawing stream handlers
     registerDrawHandlers(io, socket);
   });
@@ -93,6 +119,7 @@ export function registerSocketHandlers(io: Server) {
         clearRoomStrokes(roomId);
         io.in(roomId).socketsLeave(roomId);
         clearStaleRoomRef(io, roomId);
+        dbDeleteRoom(roomId).catch((err) => console.error("[DB] Failed to delete swept room:", err));
         console.log(`Room ${roomId} deleted (sweep expired)`);
       }
       broadcastRoomList(io);
@@ -104,7 +131,14 @@ export function registerSocketHandlers(io: Server) {
     let changed = false;
     for (const roomId of pruneDisconnected()) {
       const room = getRoom(roomId);
-      if (room) io.to(roomId).emit("room:state", serializeRoom(room));
+      if (room) {
+        io.to(roomId).emit("room:state", serializeRoom(room));
+        if (room.abandonedAt !== null) {
+          dbSetRoomAbandoned(roomId, new Date(room.abandonedAt)).catch((err) =>
+            console.error("[DB] Failed to set room abandoned on prune:", err),
+          );
+        }
+      }
       changed = true;
     }
     if (changed) broadcastRoomList(io);
@@ -135,13 +169,21 @@ function handleDisconnect(io: Server, socket: Socket) {
       try {
         // Sleep, don't delete: the player keeps seat/score for the grace window.
         const before = getRoom(roomId);
+        const me = before ? getPlayerBySocket(before, socket.id) : undefined;
+        const token = me?.id;
         const wasDrawer =
           !!before &&
-          before.game.currentDrawerId === socket.id &&
+          !!token &&
+          before.game.currentDrawerId === token &&
           (before.game.status === "WORD_SELECTION" || before.game.status === "ACTIVE_ROUND");
-        const token = before ? getPlayerBySocket(before, socket.id)?.id : undefined;
         const room = markDisconnected(roomId, socket.id);
         socket.to(roomId).emit("room:state", serializeRoom(room));
+
+        if (token) {
+          dbUpdatePlayerConnection(roomId, token, false).catch((err) =>
+            console.error("[DB] Failed to update player disconnect:", err),
+          );
+        }
 
         // Bug 1 fix: disconnecting guesser may have been the last one holding up the round.
         // Recheck after marking them offline so the round ends instead of timing out.
@@ -150,7 +192,7 @@ function handleDisconnect(io: Server, socket: Socket) {
           room.currentWord
         ) {
           const liveGuessers = [...room.players.values()].filter(
-            (p) => p.isConnected && p.role === "player" && p.socketId !== room.game.currentDrawerId,
+            (p) => p.isConnected && p.role === "player" && p.id !== room.game.currentDrawerId,
           );
           const allGuessed =
             liveGuessers.length > 0 &&
@@ -163,7 +205,6 @@ function handleDisconnect(io: Server, socket: Socket) {
         // Drawer fuse: round continues for a quick blip, ends if truly gone.
         if (wasDrawer && token) {
           if (room.drawerFuseTimeout) clearTimeout(room.drawerFuseTimeout);
-          const deadSocketId = socket.id;
           room.drawerFuseTimeout = setTimeout(() => {
             const r = getRoom(roomId);
             const ghost = r?.players.get(token);
@@ -171,7 +212,7 @@ function handleDisconnect(io: Server, socket: Socket) {
               r &&
               ghost &&
               !ghost.isConnected &&
-              r.game.currentDrawerId === deadSocketId &&
+              r.game.currentDrawerId === token &&
               (r.game.status === "WORD_SELECTION" || r.game.status === "ACTIVE_ROUND")
             ) {
               finishRound(io, roomId, "The drawer left the round");
@@ -222,13 +263,22 @@ function handleJoin(io: Server, socket: Socket) {
       const roomId = payload.roomId ?? "";
       const role: PlayerRole = payload.role === "spectator" ? "spectator" : "player";
 
-      // Revive path bypasses the name check (it's their own name); everyone else is checked.
+      // Revive path bypasses the name check (it's their own seat); everyone else is checked.
       const existingRoom = getRoom(roomId);
-      const isRevive =
-        !!payload.playerToken &&
-        existingRoom?.players.get(payload.playerToken)?.isConnected === false;
-      if (!isRevive && isUsernameTaken(existingRoom, username)) {
+      const existingPlayer = payload.playerToken ? existingRoom?.players.get(payload.playerToken) : undefined;
+      const isRevive = !!existingPlayer;
+
+      if (!isRevive && isUsernameTaken(existingRoom, username, payload.playerToken)) {
         throw new RoomError("USERNAME_TAKEN", "Username already taken in this room");
+      }
+
+      // If reviving with a lingering old socket (e.g. fast browser refresh), detach old socket cleanly
+      if (existingPlayer && existingPlayer.socketId && existingPlayer.socketId !== socket.id) {
+        const oldSocket = io.sockets.sockets.get(existingPlayer.socketId);
+        if (oldSocket) {
+          delete oldSocket.data.roomId;
+          oldSocket.leave(roomId);
+        }
       }
 
       const room = joinRoom(roomId, socket.id, username, role, Date.now(), payload.playerToken);
@@ -241,15 +291,17 @@ function handleJoin(io: Server, socket: Socket) {
       socket.emit("chat:history", { history: room.chatHistory || [] });
       broadcastRoomList(io);
 
+      const isDrawer = !!me && room.game.currentDrawerId === me.id;
+
       // Revived drawer is back: cancel the fuse, round continues.
-      if (room.drawerFuseTimeout && room.game.currentDrawerId === socket.id) {
+      if (room.drawerFuseTimeout && isDrawer) {
         clearTimeout(room.drawerFuseTimeout);
         delete room.drawerFuseTimeout;
       }
 
       // Bug 3 fix: re-emit round state to a reviving player so they see the current word/blanks.
       // room:joined carries room.game but not the per-round word payloads.
-      if (isRevive && room.game.status === "WORD_SELECTION" && socket.id === room.game.currentDrawerId) {
+      if (isRevive && room.game.status === "WORD_SELECTION" && isDrawer) {
         socket.emit("round:prompt-word", {
           suggestions: room.wordSuggestions,
           timeLimitSeconds: WORD_SELECTION_DURATION_MS / 1000,
@@ -264,7 +316,7 @@ function handleJoin(io: Server, socket: Socket) {
           roundDurationSec: room.roundDurationSec,
           serverNow,
         };
-        if (socket.id === room.game.currentDrawerId) {
+        if (isDrawer) {
           // Drawer gets the real word back
           socket.emit("round:word-assigned", {
             word: room.currentWord,
@@ -284,7 +336,19 @@ function handleJoin(io: Server, socket: Socket) {
       }
 
       // Async DB Persistence (upsert — safe to call on revive, updates socketId in DB)
-      if (me) dbAddPlayer(room.id, me.id, socket.id, me.username, me.role);
+      if (me) {
+        dbAddPlayer(room.id, me.id, socket.id, me.username, me.role).catch((err) =>
+          console.error("[DB] Failed to persist player on join:", err),
+        );
+        dbUpdatePlayerConnection(room.id, me.id, true).catch((err) =>
+          console.error("[DB] Failed to update player connection on join:", err),
+        );
+      }
+      if (room.abandonedAt === null) {
+        dbClearRoomAbandoned(room.id).catch((err) =>
+          console.error("[DB] Failed to clear room abandoned on join:", err),
+        );
+      }
     } catch (err) {
       emitError(socket, err);
     }
@@ -310,6 +374,11 @@ function handleLeave(io: Server, socket: Socket) {
       } else {
         socket.to(roomId).emit("room:state", serializeRoom(room));
       }
+      if (room.abandonedAt !== null) {
+        dbSetRoomAbandoned(roomId, new Date(room.abandonedAt)).catch((err) =>
+          console.error("[DB] Failed to set room abandoned on leave:", err),
+        );
+      }
     } catch (err) {
       emitError(socket, err);
     }
@@ -333,6 +402,10 @@ function handleDelete(io: Server, socket: Socket) {
       io.in(roomId).socketsLeave(roomId);
       clearStaleRoomRef(io, roomId);
       broadcastRoomList(io);
+
+      dbDeleteRoom(roomId).catch((err) =>
+        console.error("[DB] Failed to delete room on owner delete:", err),
+      );
     } catch (err) {
       emitError(socket, err);
     }
@@ -352,6 +425,10 @@ async function startRoundFlow(io: Server, roomId: string, socketId?: string) {
     roundNumber: room.game.roundNumber,
   });
 
+  dbUpdateRoomStatus(roomId, "WORD_SELECTION").catch((err) =>
+    console.error("[DB] Failed to set room status WORD_SELECTION:", err),
+  );
+
   // Fetch word suggestions from DB; fall back to defaults if unavailable
   const FALLBACK_WORDS = ["Sunflower", "Pizza", "Guitar", "Rocket", "Cat", "Castle", "Dragon"];
   const dbWords = await dbGetRandomWords(7);
@@ -367,10 +444,13 @@ async function startRoundFlow(io: Server, roomId: string, socketId?: string) {
   }
 
   currentRoom.wordSuggestions = suggestions;
-  io.to(drawerId).emit("round:prompt-word", {
-    suggestions,
-    timeLimitSeconds: WORD_SELECTION_DURATION_MS / 1000,
-  });
+  const drawer = currentRoom.players.get(drawerId);
+  if (drawer?.socketId) {
+    io.to(drawer.socketId).emit("round:prompt-word", {
+      suggestions,
+      timeLimitSeconds: WORD_SELECTION_DURATION_MS / 1000,
+    });
+  }
 
   currentRoom.wordSelectionTimeout = setTimeout(() => {
     const fallbackWord = currentRoom.wordSuggestions[0];
@@ -380,7 +460,6 @@ async function startRoundFlow(io: Server, roomId: string, socketId?: string) {
   }, WORD_SELECTION_DURATION_MS);
   currentRoom.wordSelectionTimeout.unref();
 
-  const drawer = currentRoom ? getPlayerBySocket(currentRoom, drawerId) : undefined;
   console.log(`Game started in room ${roomId}. Drawer: ${drawer?.username} (${drawerId})`);
 }
 
@@ -405,7 +484,9 @@ function handleSetWord(io: Server, socket: Socket) {
   return (payload: { word?: string; hint?: string }) => {
     const roomId = socket.data.roomId as string | undefined;
     const room = getRoom(roomId);
-    if (!room || room.game.currentDrawerId !== socket.id || !payload.word?.trim()) return;
+    if (!room) return;
+    const me = getPlayerBySocket(room, socket.id);
+    if (!me || room.game.currentDrawerId !== me.id || !payload.word?.trim()) return;
 
     if (room.game.status !== "WORD_SELECTION") return;
 
@@ -429,7 +510,7 @@ function handleSetWord(io: Server, socket: Socket) {
       return;
     }
 
-    beginRound(io, room.id, socket.id, word, hint);
+    beginRound(io, room.id, me.id, word, hint);
   };
 }
 
@@ -451,6 +532,23 @@ function beginRound(io: Server, roomId: string, drawerId: string, word: string, 
   room.revealedIndices.clear();
   room.correctGuesserIds = [];
 
+  const roundId = randomUUID();
+  room.currentRoundId = roundId;
+  const drawerPlayer = room.players.get(drawerId);
+  if (drawerPlayer) {
+    dbCreateRound(
+      roundId,
+      room.id,
+      room.game.roundNumber,
+      drawerPlayer.id,
+      word,
+      ROUND_DURATION_S,
+    ).catch((err) => console.error("[DB] Failed to create round in DB:", err));
+  }
+  dbUpdateRoomStatus(room.id, "ACTIVE_ROUND").catch((err) =>
+    console.error("[DB] Failed to set room status ACTIVE_ROUND in DB:", err),
+  );
+
   startRoundTimer(io, room.id);
   const serverNow = Date.now();
   const timerSync = {
@@ -460,15 +558,18 @@ function beginRound(io: Server, roomId: string, drawerId: string, word: string, 
     serverNow,
   };
 
-  io.to(drawerId).emit("round:word-assigned", {
-    word,
-    hint,
-    ...timerSync,
-  });
+  if (drawerPlayer?.socketId) {
+    io.to(drawerPlayer.socketId).emit("round:word-assigned", {
+      word,
+      hint,
+      ...timerSync,
+    });
+  }
 
   const blanks = generateMaskedWord(word, room.revealedIndices);
+  const exceptSockets = drawerPlayer?.socketId ? [drawerPlayer.socketId] : [];
   io.to(room.id)
-    .except(drawerId)
+    .except(exceptSockets)
     .emit("round:word-masked", {
       blanks,
       letterCount: word.length,
@@ -557,7 +658,7 @@ function handleChatSend(io: Server, socket: Socket) {
       room.game.status === "ACTIVE_ROUND" &&
       room.currentWord &&
       player?.role === "player" &&
-      socket.id !== room.game.currentDrawerId &&
+      player.id !== room.game.currentDrawerId &&
       !room.correctGuesserIds.includes(player.id)  // stable token — survives reconnect
     ) {
       // 1. EXACT MATCH
@@ -582,9 +683,25 @@ function handleChatSend(io: Server, socket: Socket) {
         room.chatHistory.push(sysMsg);
         io.to(room.id).emit("chat:message", sysMsg);
 
+        // Async DB Persistence: correct guess, updated score, and system message
+        if (player) {
+          dbUpdatePlayerScore(room.id, player.id, player.score).catch((err) =>
+            console.error("[DB] Failed to update player score:", err),
+          );
+          if (room.currentRoundId) {
+            const timeTaken = ROUND_DURATION_S - getTimeLeft(room);
+            dbSaveCorrectGuess(room.currentRoundId, player.id, points, timeTaken).catch((err) =>
+              console.error("[DB] Failed to save correct guess:", err),
+            );
+          }
+        }
+        dbSaveChatMessage(sysMsg.id, room.id, null, sysMsg.message, "CORRECT_GUESS").catch((err) =>
+          console.error("[DB] Failed to save system chat message:", err),
+        );
+
         // Check if every connected non-drawer player has now guessed — finish early if so.
         const liveGuessers = [...room.players.values()].filter(
-          (p) => p.isConnected && p.role === "player" && p.socketId !== room.game.currentDrawerId,
+          (p) => p.isConnected && p.role === "player" && p.id !== room.game.currentDrawerId,
         );
         if (liveGuessers.length > 0 && liveGuessers.every((p) => room.correctGuesserIds.includes(p.id))) {
           finishRound(io, room.id, "Everyone guessed the word!");
@@ -624,6 +741,11 @@ function handleChatSend(io: Server, socket: Socket) {
     if (room.chatHistory.length >= 200) room.chatHistory.shift();
     room.chatHistory.push(chatMsg);
     io.to(room.id).emit("chat:message", chatMsg);
+
+    // Async DB Persistence: chat message
+    dbSaveChatMessage(chatMsg.id, room.id, player?.id ?? null, chatMsg.message, "CHAT").catch((err) =>
+      console.error("[DB] Failed to save chat message:", err),
+    );
   };
 }
 
@@ -641,6 +763,9 @@ function shouldFinishAfterDrawerDeparture(
 function finishRound(io: Server, roomId: string, reason: string) {
   const room = getRoom(roomId);
   if (!room) return;
+
+  // Guard: prevent double-finish from concurrent events (e.g. disconnect + guess-all)
+  if (room.game.status !== "ACTIVE_ROUND" && room.game.status !== "WORD_SELECTION") return;
 
   if (room.timerInterval) {
     clearInterval(room.timerInterval);
@@ -661,10 +786,26 @@ function finishRound(io: Server, roomId: string, reason: string) {
   // Flat drawer bonus — awarded once per round if at least one guesser got it right (B-4).
   // Ghost drawers earn nothing: they weren't there to draw.
   const drawer = room.game.currentDrawerId
-    ? getPlayerBySocket(room, room.game.currentDrawerId)
+    ? room.players.get(room.game.currentDrawerId)
     : undefined;
   if (room.correctGuesserIds.length > 0 && drawer?.isConnected) {
-    addPlayerScore(room.id, room.game.currentDrawerId!, 50);
+    addPlayerScore(room.id, drawer.id, 50);
+    dbUpdatePlayerScore(room.id, drawer.id, drawer.score).catch((err) =>
+      console.error("[DB] Failed to update drawer score on round end:", err),
+    );
+  }
+
+  // Finalize round & batch-persist strokes if needed
+  if (room.currentRoundId) {
+    dbFinishRound(room.currentRoundId).catch((err) =>
+      console.error("[DB] Failed to finish round in DB:", err),
+    );
+    const strokes = getRoomStrokes(roomId);
+    if (strokes.length > 0) {
+      dbSaveRoundStrokesBatch(room.currentRoundId, strokes).catch((err) =>
+        console.error("[DB] Failed to batch save round strokes:", err),
+      );
+    }
   }
 
   // Transition to COMPLETED on the final round, ROUND_ENDING otherwise (B-6)
@@ -673,8 +814,14 @@ function finishRound(io: Server, roomId: string, reason: string) {
   if (isGameOver) {
     room.game.status = "COMPLETED";
     markRoomCompleted(roomId);
+    dbUpdateRoomStatus(roomId, "COMPLETED", new Date()).catch((err) =>
+      console.error("[DB] Failed to set room status COMPLETED:", err),
+    );
   } else {
     room.game.status = "ROUND_ENDING";
+    dbUpdateRoomStatus(roomId, "ROUND_ENDING").catch((err) =>
+      console.error("[DB] Failed to set room status ROUND_ENDING:", err),
+    );
 
     // Auto-advance after 8 seconds
     room.roundAdvanceTimeout = setTimeout(() => {

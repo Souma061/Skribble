@@ -27,7 +27,6 @@ interface RoundTimerSync {
 interface RoomViewProps {
   socket: Socket | null;
   room: RoomState;
-  currentSocketId: string | null;
   currentPlayerToken: string | null;
   connected: boolean;
   onLeaveRoom: () => void;
@@ -49,7 +48,6 @@ const PASTEL_CARD_BG = [
 export const RoomView: React.FC<RoomViewProps> = ({
   socket,
   room,
-  currentSocketId,
   currentPlayerToken,
   connected,
   onLeaveRoom,
@@ -81,12 +79,15 @@ export const RoomView: React.FC<RoomViewProps> = ({
   } | null>(null);
 
   // Chat & Guess State
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    () => room.chatHistory ?? [],
+  );
   const [closeGuessAlert, setCloseGuessAlert] = useState<string | null>(null);
 
-  // ownerId is a playerToken; currentDrawerId is a socket id (remapped on revive).
+  // ownerId and currentDrawerId are stable playerTokens (persisted in sessionStorage).
   const isOwner = !!currentPlayerToken && room.ownerId === currentPlayerToken;
-  const isDrawer = room.game.currentDrawerId === currentSocketId;
+  const isDrawer =
+    !!currentPlayerToken && room.game.currentDrawerId === currentPlayerToken;
   const activePlayers = room.players.filter((p) => p.role === "player");
   const spectators = room.players.filter((p) => p.role === "spectator");
 
@@ -122,6 +123,9 @@ export const RoomView: React.FC<RoomViewProps> = ({
   // Socket listeners for game flow
   useEffect(() => {
     if (!socket) return;
+
+    // Request latest chat history from server
+    socket.emit("chat:request-sync");
 
     // 1. Drawer Prompt
     const handlePromptWord = (payload: {
@@ -474,10 +478,17 @@ export const RoomView: React.FC<RoomViewProps> = ({
             <button
               onClick={onStartGame}
               disabled={activePlayers.length < 2}
+              title={
+                activePlayers.length < 2
+                  ? "At least 2 players are required to start the game"
+                  : "Start the game"
+              }
               className="px-8 py-3.5 rounded-2xl bg-[#7C3AED] hover:bg-[#6D28D9] disabled:bg-[#D1D5DB] disabled:cursor-not-allowed text-white text-base font-extrabold shadow-md btn-squishy flex items-center gap-2 cursor-pointer transition-colors"
             >
               <Play className="w-5 h-5 fill-white" />
-              Start Game Now
+              {activePlayers.length < 2
+                ? "Waiting for 2nd Player..."
+                : "Start Game Now"}
             </button>
           )}
         </div>

@@ -2,10 +2,10 @@ import type { GameStatus } from "./game/types.js";
 import {
   ABANDONED_MS,
   COMPLETED_MS,
-  GRACE_MS,
   createRoom,
   getPlayerBySocket,
   getRoom,
+  GRACE_MS,
   isUsernameTaken,
   joinRoom,
   leaveRoom,
@@ -204,7 +204,9 @@ joinRoom(gameRoom.id, "player_2", "GuestBob", "player");
 joinRoom(gameRoom.id, "spec_1", "SpectatorCat", "spectator");
 
 const { drawerId } = startGame(gameRoom.id, "owner_1");
-assert(drawerId === "owner_1" || drawerId === "player_2", "selected an active player as drawer");
+const ownerToken = getPlayerBySocket(gameRoom, "owner_1")!.id;
+const guestToken = getPlayerBySocket(gameRoom, "player_2")!.id;
+assert(drawerId === ownerToken || drawerId === guestToken, "selected an active player as drawer (token)");
 assert(gameRoom.maxRounds === 2, "maxRounds set to active player count (2)");
 assert(gameRoom.game.status === "WORD_SELECTION", "game status transitions to WORD_SELECTION");
 
@@ -251,6 +253,18 @@ assert(revived.socketId === "sock_a2", "revive swaps to the new socket");
 assert(revived.score === 150, "revive keeps score");
 assert(revived.username === "GhostAnn", "revive keeps username and role");
 
+console.log("Testing Fast Browser Refresh (Reconnection while still connected)...");
+const fastRoom = createRoom("Fast Refresh Room", "sock_f1", "FastUser", "player");
+const fastToken = getPlayerBySocket(fastRoom, "sock_f1")!.id;
+// User hits F5: new socket connects before old socket dropped
+fastRoom.game.currentDrawerId = fastToken;
+const refreshedRoom = joinRoom(fastRoom.id, "sock_f2", "FastUser", "player", baseTime, fastToken);
+const refreshedPlayer = refreshedRoom.players.get(fastToken)!;
+assert(refreshedPlayer.socketId === "sock_f2", "fast refresh rebinds socket id immediately");
+assert(refreshedPlayer.isConnected === true, "fast refresh keeps player connected");
+assert(refreshedPlayer.username === "FastUser", "fast refresh keeps username");
+assert(refreshedRoom.game.currentDrawerId === fastToken, "fast refresh preserves currentDrawerId token");
+
 console.log("Testing Reconnection Expiry...");
 markDisconnected(reRoom.id, "sock_a2", baseTime);
 const prunedEarly = pruneDisconnected(baseTime + GRACE_MS - 1000);
@@ -281,8 +295,11 @@ joinRoom(exclRoom.id, "e2", "Two", "player");
 joinRoom(exclRoom.id, "e3", "Three", "player");
 markDisconnected(exclRoom.id, "e2", baseTime);
 const { drawerId: exclDrawer } = startGame(exclRoom.id, "e1");
-assert(exclDrawer !== "e2", "ghost excluded from the drawer pool");
-assert(exclDrawer === "e1" || exclDrawer === "e3", "drawer picked from connected players");
+const e2Token = getPlayerBySocket(exclRoom, "e2")!.id;
+const e1Token = getPlayerBySocket(exclRoom, "e1")!.id;
+const e3Token = getPlayerBySocket(exclRoom, "e3")!.id;
+assert(exclDrawer !== e2Token, "ghost excluded from the drawer pool");
+assert(exclDrawer === e1Token || exclDrawer === e3Token, "drawer picked from connected players");
 assert(
   isUsernameTaken(exclRoom, "Two", "some-other-token"),
   "sanity: name check still sees the ghost",
